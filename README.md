@@ -1,10 +1,10 @@
 # Internet Archive MCP Server
 
 MCP server for [Internet Archive](https://archive.org/).
-Search and access OCR text from millions of digitized books and documents:
+Search digitized books and documents, accessing their full OCR text:
 
-- **search_archive**: Paginated search (100 docs/page) with optional collection filtering
-- **download_text**: Download full OCR text from documents with automatic file selection
+- **search_archive**: Full-text search across document contents. Returns paginated results (100 docs/page) with text snippets showing matches in context. Supports complex queries with AND/OR/NOT operators, exact phrases, and optional collection filtering.
+- **download_text**: Downloads complete OCR text from any document. Automatically selects the best available text format (hOCR, DjVu, or plain text) and caches results locally for fast repeated access.
 
 ## Installation
 
