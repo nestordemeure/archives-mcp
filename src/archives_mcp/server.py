@@ -42,6 +42,9 @@ async def search_archive(
     Returns paginated results (100 documents per page) with metadata and text snippets.
     Each document includes title, creators, publication date, and relevant text excerpts.
 
+    Note: Fulltext search operates at document level - "A AND B" matches if both terms appear
+    anywhere in the document, even hundreds of pages apart.
+
     Query Syntax:
     - Multiple terms separated by spaces are treated as AND (e.g., "magic tricks" finds documents with both words)
     - Use quotes for exact phrases (e.g., "card tricks")
