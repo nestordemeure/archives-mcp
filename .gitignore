@@ -1,3 +1,9 @@
+# Project specific
+cache/
+
+# IDE / Agent
+.claude/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
