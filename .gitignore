@@ -3,6 +3,7 @@ cache/
 
 # IDE / Agent
 .claude/
+.gemini/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
