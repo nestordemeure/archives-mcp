@@ -13,6 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
+archives = "archives_mcp.cli:main"
 archives-mcp = "archives_mcp.server:main"
 archives-mcp-install = "archives_mcp.install:main"
 

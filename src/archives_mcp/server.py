@@ -7,11 +7,11 @@ movies, software, music, websites, and more.
 """
 
 from typing import Optional
-from pathlib import Path
 
 from fastmcp import FastMCP
 
 from .client import ArchivesClient
+from .paths import cache_dir
 
 
 # Initialize MCP server
@@ -25,8 +25,7 @@ async def get_client() -> ArchivesClient:
     """Get or create the global Archives client"""
     global _client
     if _client is None:
-        cache_dir = Path.cwd() / "cache" / "archives"
-        _client = ArchivesClient(cache_dir=cache_dir)
+        _client = ArchivesClient(cache_dir=cache_dir())
     return _client
 
 
@@ -76,8 +75,7 @@ async def search_archive(
     """
     # Create a new client if collection is specified
     if collection:
-        cache_dir = Path.cwd() / "cache" / "archives"
-        client = ArchivesClient(cache_dir=cache_dir, collection=collection)
+        client = ArchivesClient(cache_dir=cache_dir(), collection=collection)
     else:
         client = await get_client()
 

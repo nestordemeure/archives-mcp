@@ -212,3 +212,7 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+# Keep the data-source skill under version control; ignore the rest of .claude
+!.claude/
+!.claude/skills/
+!.claude/skills/**

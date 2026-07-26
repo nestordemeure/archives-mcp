@@ -1,0 +1,262 @@
+"""Command-line interface for Internet Archive full-text search.
+
+A thin wrapper over :class:`ArchivesClient` that formats results for reading in a
+terminal or by an agent driving the command through a shell. Output is compact
+and greppable by default; ``--json`` emits the raw client structures.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import math
+import sys
+from typing import Any
+
+from .client import ArchivesClient
+from .paths import cache_dir
+
+RESULTS_PER_PAGE = 100
+DEFAULT_SNIPPETS_SHOWN = 2
+PROGRAM_NAME = "archives"
+
+
+class PageRange:
+    """A 1-indexed, inclusive range of result pages. ``last is None`` means all."""
+
+    def __init__(self, first: int, last: int | None) -> None:
+        self.first = first
+        self.last = last
+
+    def contains(self, page: int) -> bool:
+        return page >= self.first and (self.last is None or page <= self.last)
+
+    def __str__(self) -> str:
+        if self.last is None:
+            return f"{self.first}-all"
+        if self.last == self.first:
+            return str(self.first)
+        return f"{self.first}-{self.last}"
+
+
+def parse_page_range(value: str) -> PageRange:
+    """Parse a ``--pages`` value: ``3``, ``2-5`` or ``all``."""
+    text = value.strip().lower()
+
+    if text == "all":
+        return PageRange(1, None)
+
+    try:
+        if "-" in text:
+            first_text, _, last_text = text.partition("-")
+            first, last = int(first_text), int(last_text)
+        else:
+            first = last = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected a page number, a range like 2-5, or 'all'; got {value!r}"
+        ) from None
+
+    if first < 1:
+        raise argparse.ArgumentTypeError(f"page numbers start at 1; got {value!r}")
+    if last < first:
+        raise argparse.ArgumentTypeError(f"page range runs backwards: {value!r}")
+
+    return PageRange(first, last)
+
+
+def format_date(raw: Any) -> str:
+    """Trim an archive.org timestamp to its date part."""
+    if not raw:
+        return "n.d."
+    return str(raw).split("T", 1)[0]
+
+
+def format_document(position: int, document: dict[str, Any], max_snippets: int) -> str:
+    """Render one search result as an indented, greppable block."""
+    lines = []
+
+    identifier = document["identifier"]
+    header = f"[{position}] {identifier}  ({format_date(document.get('date'))})"
+    if (page := document.get("page")) is not None:
+        header += f"  p.{page}"
+    lines.append(header)
+
+    # Many items carry no real title; the client falls back to the identifier,
+    # which the header already shows.
+    title = document.get("title") or ""
+    if title == identifier:
+        title = ""
+    if creators := document.get("creators"):
+        title = f"{title} — {', '.join(creators)}" if title else ", ".join(creators)
+    if title:
+        lines.append(f"    {title}")
+    lines.append(f"    {document['url']}")
+
+    snippets = document.get("snippets") or []
+    for snippet in snippets[:max_snippets]:
+        lines.append(f"    · {snippet}")
+    if (hidden := len(snippets) - max_snippets) > 0:
+        lines.append(f"    · … {hidden} more snippet{'s' if hidden > 1 else ''}")
+
+    return "\n".join(lines)
+
+
+def total_page_count(total_results: int) -> int:
+    return max(1, math.ceil(total_results / RESULTS_PER_PAGE))
+
+
+async def run_search(args: argparse.Namespace) -> int:
+    """Fetch the requested pages, streaming results as each page arrives."""
+    client = ArchivesClient(cache_dir=cache_dir(args.cache_dir), collection=args.collection)
+    collected: list[dict[str, Any]] = []
+    total_results = 0
+
+    try:
+        page = args.pages.first
+        while args.pages.contains(page):
+            result = await client.search(query=args.query, page=page, rows=RESULTS_PER_PAGE)
+
+            if error := result.get("error"):
+                print(f"{PROGRAM_NAME}: page {page} failed: {error}", file=sys.stderr)
+                return 1
+
+            total_results = result["total_results"]
+            total_pages = total_page_count(total_results)
+            documents = result["documents"]
+
+            if page > total_pages:
+                break
+
+            if args.json:
+                collected.extend(documents)
+            else:
+                scope = f"page {page} of {total_pages}"
+                print(f"# {args.query} — {total_results} results, {scope}")
+                if not documents:
+                    print("  (no documents on this page)")
+                for offset, document in enumerate(documents):
+                    position = (page - 1) * RESULTS_PER_PAGE + offset + 1
+                    print(format_document(position, document, args.snippets))
+                print()
+
+            if page >= total_pages:
+                break
+            page += 1
+    finally:
+        await client.close()
+
+    if args.json:
+        json.dump(
+            {
+                "query": args.query,
+                "collection": args.collection,
+                "total_results": total_results,
+                "total_pages": total_page_count(total_results),
+                "pages_fetched": str(args.pages),
+                "documents": collected,
+            },
+            sys.stdout,
+            indent=2,
+            ensure_ascii=False,
+        )
+        print()
+
+    return 0
+
+
+async def run_get(args: argparse.Namespace) -> int:
+    """Download an item's OCR text and print the path to the cached file."""
+    client = ArchivesClient(cache_dir=cache_dir(args.cache_dir))
+
+    try:
+        path = await client.download_text(args.identifier)
+    finally:
+        await client.close()
+
+    if path is None:
+        print(
+            f"{PROGRAM_NAME}: no OCR text available for {args.identifier} "
+            "(item missing, restricted, or not text)",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(path)
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog=PROGRAM_NAME,
+        description="Full-text search over Internet Archive texts.",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        default=None,
+        help="override the download cache location (default: $XDG_CACHE_HOME/mentalism-research/archives)",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    search = subparsers.add_parser(
+        "search",
+        help="search full text across archive.org",
+        description=(
+            "Search the full text of archive.org texts. Terms separated by spaces are "
+            "ANDed, \"quoted phrases\" match exactly, OR offers alternatives, a leading "
+            "- excludes, and parentheses group. Matching is document-level: 'A AND B' "
+            "hits a document containing both, even hundreds of pages apart."
+        ),
+    )
+    search.add_argument("query", help="search query")
+    search.add_argument(
+        "--pages",
+        type=parse_page_range,
+        default=PageRange(1, 1),
+        metavar="SPEC",
+        help="which result pages to fetch: N, N-M, or 'all' (default: 1)",
+    )
+    search.add_argument(
+        "--snippets",
+        type=int,
+        default=DEFAULT_SNIPPETS_SHOWN,
+        metavar="N",
+        help=f"snippets shown per document (default: {DEFAULT_SNIPPETS_SHOWN})",
+    )
+    search.add_argument(
+        "--collection",
+        default=None,
+        help="restrict to one archive.org collection, e.g. iapsop",
+    )
+    search.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    search.set_defaults(handler=run_search)
+
+    get = subparsers.add_parser(
+        "get",
+        help="download an item's OCR text, printing the cache path",
+        description=(
+            "Download the best available OCR text for an item and print the path to the "
+            "cached file. Files are large (100KB-1MB+); read slices of them rather than "
+            "loading them whole."
+        ),
+    )
+    get.add_argument("identifier", help="archive.org item identifier, from search results")
+    get.set_defaults(handler=run_get)
+
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+
+    try:
+        exit_code = asyncio.run(args.handler(args))
+    except KeyboardInterrupt:
+        exit_code = 130
+
+    sys.exit(exit_code)
+
+
+if __name__ == "__main__":
+    main()

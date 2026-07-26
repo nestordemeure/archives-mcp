@@ -17,6 +17,8 @@ from urllib.parse import urlencode, quote
 
 import httpx
 
+from .paths import cache_dir as default_cache_dir
+
 
 # HTTP status codes
 HTTP_UNAUTHORIZED = 401
@@ -220,13 +222,21 @@ def extract_list(value: Any) -> list[str]:
     return []
 
 
-def sanitize_snippet(snippet: str | None) -> str:
+def sanitize_snippet(snippet: str | None, keep_highlights: bool = True) -> str:
+    """Normalize a snippet's whitespace, optionally keeping match highlights.
+
+    Internet Archive wraps matched terms in braces. Those markers are worth
+    keeping by default: they show which token actually matched, which is how a
+    reader spots substring false positives such as "Her-{bert Reese}" for a
+    "Bert Reese" query. Nested braces are collapsed to a single pair.
+    """
     if snippet is None:
         return ""
     if not isinstance(snippet, str):
         snippet = str(snippet)
-    # Remove highlighting braces like {KEYWORD}, {{KEYWORD}}, or {{{KEYWORD}}}
-    snippet = re.sub(r'\{+([^{}]*?)\}+', r'\1', snippet)
+    # Highlighting braces arrive as {KEYWORD}, {{KEYWORD}} or {{{KEYWORD}}}
+    replacement = r'{\1}' if keep_highlights else r'\1'
+    snippet = re.sub(r'\{+([^{}]*?)\}+', replacement, snippet)
     return re.sub(r"\s+", " ", snippet).strip()
 
 
@@ -294,7 +304,7 @@ class ArchivesClient:
         """
         self.client: Optional[httpx.AsyncClient] = None
         self.collection = collection
-        self.cache_dir = cache_dir or Path.cwd() / "cache" / "archives"
+        self.cache_dir = Path(cache_dir) if cache_dir is not None else default_cache_dir()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._user_agent = 'archives-mcp/0.1.0'
 

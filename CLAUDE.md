@@ -1,14 +1,32 @@
 # Internet Archive MCP - Internal Documentation
 
-This document explains the inner workings of the Internet Archive MCP server implementation.
+This document explains the inner workings of the Internet Archive implementation.
 
 ## Architecture Overview
 
-The Internet Archive MCP server is built on three main components:
+`client.py` holds all the behaviour. Everything else is a thin presentation layer over it,
+so search semantics, caching and error handling stay identical no matter how it is called.
 
 1. **client.py** - Core Internet Archive client with search and download functionality
 2. **server.py** - FastMCP server exposing tools to MCP clients
-3. **install.py** - CLI installation helper
+3. **cli.py** - `archives` command-line interface, used by the `archives-search` skill
+4. **paths.py** - Cache location resolution, shared by the server and the CLI
+5. **install.py** - MCP server installation helper
+
+### Why two front-ends
+
+The MCP server suits clients that speak MCP. The CLI suits agents driven through a shell:
+its tool schema costs nothing until the command is actually run, so it does not occupy
+context in sessions that never touch this archive. The bundled skill under
+`.claude/skills/archives-search/` documents the CLI for that use.
+
+### paths.py
+
+The cache must not depend on the working directory. The CLI is installed globally and run
+from whatever project the researcher is in, so a CWD-relative cache would scatter
+downloads across unrelated folders and destroy the hit rate. `cache_dir()` resolves, in
+order: an explicit override, `ARCHIVES_CACHE_DIR`, then
+`$XDG_CACHE_HOME/mentalism-research/archives` (`~/.cache` by default).
 
 ## Design Decisions
 
@@ -87,7 +105,7 @@ The `download_text()` method returns a `Path` to the cached file, not the text i
    - Improves response time dramatically (instant vs. seconds)
 
    Cache behavior:
-   - **Location**: `./cache/archives/`
+   - **Location**: `$XDG_CACHE_HOME/mentalism-research/archives/` (see `paths.py`)
    - **Key format**: `{identifier}.txt` (filename auto-detected)
    - **Cache check**: First action in `download_text()` method (line 467-474)
    - **What's cached**:
@@ -129,7 +147,7 @@ The `download_text()` method returns a `Path` to the cached file, not the text i
 
 - `_safe_int()` - Safe integer conversion with fallback
 - `build_item_url()` - Constructs archive.org detail page URLs
-- `sanitize_snippet()` - Removes highlight markers and normalizes whitespace
+- `sanitize_snippet()` - Normalizes whitespace, keeping `{brace}` match highlights by default
 
 ### server.py
 
@@ -199,8 +217,7 @@ async def get_client() -> ArchivesClient:
     """Get or create the global Archives client"""
     global _client
     if _client is None:
-        cache_dir = Path.cwd() / "cache" / "archives"
-        _client = ArchivesClient(cache_dir=cache_dir)
+        _client = ArchivesClient(cache_dir=cache_dir())
     return _client
 ```
 
@@ -295,11 +312,12 @@ Returns JSON with available files and their metadata.
 ### Cache Directory Structure
 
 ```
-cache/
-└── archives/
-    ├── {identifier}_{filename}.txt  # Cached text file content
-    └── {identifier}.txt              # Cached text when auto-detected filename
+$XDG_CACHE_HOME/mentalism-research/archives/
+├── {identifier}_{filename}.txt  # Cached text file content
+└── {identifier}.txt              # Cached text when auto-detected filename
 ```
+
+Resolved by `paths.cache_dir()`; override with `--cache-dir` or `ARCHIVES_CACHE_DIR`.
 
 ### Cache Keys
 
