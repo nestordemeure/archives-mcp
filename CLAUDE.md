@@ -4,8 +4,7 @@ This document explains the inner workings of the Internet Archive implementation
 
 ## Architecture Overview
 
-`client.py` holds all the behaviour. Everything else is a thin presentation layer over it,
-so search semantics, caching and error handling stay identical no matter how it is called.
+`client.py` holds all the behaviour. Everything else is a thin presentation layer over it, so search semantics, caching and error handling stay identical no matter how it is called.
 
 1. **client.py** - Core Internet Archive client with search and download functionality
 2. **server.py** - FastMCP server exposing tools to MCP clients
@@ -15,18 +14,11 @@ so search semantics, caching and error handling stay identical no matter how it 
 
 ### Why two front-ends
 
-The MCP server suits clients that speak MCP. The CLI suits agents driven through a shell:
-its tool schema costs nothing until the command is actually run, so it does not occupy
-context in sessions that never touch this archive. The bundled skill under
-`.claude/skills/archives-search/` documents the CLI for that use.
+The MCP server suits clients that speak MCP. The CLI suits agents driven through a shell: its tool schema costs nothing until the command is actually run, so it does not occupy context in sessions that never touch this archive. The bundled skill under `.claude/skills/archives-search/` documents the CLI for that use.
 
 ### paths.py
 
-The cache must not depend on the working directory. The CLI is installed globally and run
-from whatever project the researcher is in, so a CWD-relative cache would scatter
-downloads across unrelated folders and destroy the hit rate. `cache_dir()` resolves, in
-order: an explicit override, `ARCHIVES_CACHE_DIR`, then
-`$XDG_CACHE_HOME/archives-mcp` (`~/.cache` by default).
+The cache must not depend on the working directory. The CLI is installed globally and run from whatever project the researcher is in, so a CWD-relative cache would scatter downloads across unrelated folders and destroy the hit rate. `cache_dir()` resolves, in order: an explicit override, `ARCHIVES_CACHE_DIR`, then `$XDG_CACHE_HOME/archives-mcp` (`~/.cache` by default).
 
 ## Design Decisions
 
@@ -111,9 +103,7 @@ The `download_text()` method returns a `Path` to the cached file, not the text i
    - **What's cached**:
      - Successful downloads → Full text content in file
      - 404 Not Found → `UNAVAILABLE_SENTINEL` (prevents repeated failed requests)
-     - 401/403 Access Denied → **not cached**; raised instead, since archive.org
-       returns 403 both for restricted items and for throttled requests, and a
-       throttled request must not mark a document permanently unavailable
+     - 401/403 Access Denied → **not cached**; raised instead, since archive.org returns 403 both for restricted items and for throttled requests, and a throttled request must not mark a document permanently unavailable
    - **Cache write**: After a successful download, or a confirmed 404
    - **Return value**: Path to cached file (or None if unavailable)
 
@@ -123,8 +113,7 @@ The `download_text()` method returns a `Path` to the cached file, not the text i
    - Users expect fresh results
    - Different queries/pages need different results
 
-2. **Text File Selection**
-   Priority order for automatic file detection:
+2. **Text File Selection** Priority order for automatic file detection:
    - hOCR format (`_hocr.txt`) - structured OCR with positioning info
    - DjVuTXT format (`_djvu.txt`) - high-quality DjVu OCR
    - Generic `.txt` files - fallback
@@ -364,8 +353,7 @@ In `download_text()`:
 **Cache methods**:
 - `_get_cache_key()` - Generates cache filename from identifier/filename
 - `_write_to_cache()` - Writes text to cache file
-- `_is_unavailable_marker()` - Detects the sentinel, checking file size first so a
-  multi-megabyte entry is never read just to compare it against a 3-byte string
+- `_is_unavailable_marker()` - Detects the sentinel, checking file size first so a multi-megabyte entry is never read just to compare it against a 3-byte string
 
 **No cache eviction** - Files remain cached indefinitely. Manual cleanup required if disk space is a concern.
 
@@ -373,21 +361,11 @@ In `download_text()`:
 
 ## Rate Limiting
 
-Requests are spaced by a cross-process rate limiter (`ratelimit.py`), default 0.5s,
-overridable with `ARCHIVES_MIN_REQUEST_INTERVAL`. Search, metadata and download requests
-all pass through it.
+Requests are spaced by a cross-process rate limiter (`ratelimit.py`), default 0.5s, overridable with `ARCHIVES_MIN_REQUEST_INTERVAL`. Search, metadata and download requests all pass through it.
 
-**Why cross-process rather than an instance or class attribute.** An in-process limiter
-was adequate while the only caller was a long-lived MCP server handling one request at a
-time. It is not adequate now: every CLI invocation is a separate process with its own
-state, and callers are expected to fan work out across several at once, so any in-process
-counter paces nothing. The limiter therefore keeps its timestamp in `.rate-limit` inside
-the cache directory, guarded by an exclusive `flock`, which every process sharing that
-cache observes.
+**Why cross-process rather than an instance or class attribute.** An in-process limiter was adequate while the only caller was a long-lived MCP server handling one request at a time. It is not adequate now: every CLI invocation is a separate process with its own state, and callers are expected to fan work out across several at once, so any in-process counter paces nothing. The limiter therefore keeps its timestamp in `.rate-limit` inside the cache directory, guarded by an exclusive `flock`, which every process sharing that cache observes.
 
-The lock is never held across a sleep: a waiter releases it and retries, so one slow
-caller cannot wedge the others behind it. Wall-clock time is used rather than monotonic,
-since only wall clock is comparable between processes.
+The lock is never held across a sleep: a waiter releases it and retries, so one slow caller cannot wedge the others behind it. Wall-clock time is used rather than monotonic, since only wall clock is comparable between processes.
 
 ## Error Handling
 
@@ -399,21 +377,16 @@ since only wall clock is comparable between processes.
 
 ### Download Errors
 
-The governing rule: `None` means "archive.org says this does not exist". Anything that
-might succeed on a retry is raised, so that a transient failure is never mistaken for an
-absent document and never cached as one.
+The governing rule: `None` means "archive.org says this does not exist". Anything that might succeed on a retry is raised, so that a transient failure is never mistaken for an absent document and never cached as one.
 
 - 404 Not Found → cache the sentinel, return None
 - Item has no text file → cache the sentinel, return None
 - 401/403 Access Denied → **raise** (restricted or throttled - indistinguishable)
 - Network errors → **raise**
-- Metadata API unreachable → **raise** (previously swallowed, which cached readable
-  documents as permanently unavailable)
+- Metadata API unreachable → **raise** (previously swallowed, which cached readable documents as permanently unavailable)
 - Gzip / decode errors → **raise** as `RuntimeError`
 
-An unknown identifier is not an error: archive.org answers the files endpoint with
-`{"error": "Couldn't locate item ..."}`, which is read as "no files" and cached as
-unavailable.
+An unknown identifier is not an error: archive.org answers the files endpoint with `{"error": "Couldn't locate item ..."}`, which is read as "no files" and cached as unavailable.
 
 ### Graceful Degradation
 
