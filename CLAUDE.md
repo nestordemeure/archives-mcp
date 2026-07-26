@@ -26,7 +26,7 @@ The cache must not depend on the working directory. The CLI is installed globall
 from whatever project the researcher is in, so a CWD-relative cache would scatter
 downloads across unrelated folders and destroy the hit rate. `cache_dir()` resolves, in
 order: an explicit override, `ARCHIVES_CACHE_DIR`, then
-`$XDG_CACHE_HOME/mentalism-research/archives` (`~/.cache` by default).
+`$XDG_CACHE_HOME/archives-mcp` (`~/.cache` by default).
 
 ## Design Decisions
 
@@ -105,14 +105,16 @@ The `download_text()` method returns a `Path` to the cached file, not the text i
    - Improves response time dramatically (instant vs. seconds)
 
    Cache behavior:
-   - **Location**: `$XDG_CACHE_HOME/mentalism-research/archives/` (see `paths.py`)
+   - **Location**: `$XDG_CACHE_HOME/archives-mcp/` (see `paths.py`)
    - **Key format**: `{identifier}.txt` (filename auto-detected)
-   - **Cache check**: First action in `download_text()` method (line 467-474)
+   - **Cache check**: First action in `download_text()`
    - **What's cached**:
      - Successful downloads → Full text content in file
-     - 404 Not Found → String "404" in file (prevents repeated failed requests)
-     - 401/403 Access Denied → String "404" in file (treated as unavailable)
-   - **Cache write**: After successful download or confirmed failure (lines 480, 487, 498, 511, 516)
+     - 404 Not Found → `UNAVAILABLE_SENTINEL` (prevents repeated failed requests)
+     - 401/403 Access Denied → **not cached**; raised instead, since archive.org
+       returns 403 both for restricted items and for throttled requests, and a
+       throttled request must not mark a document permanently unavailable
+   - **Cache write**: After a successful download, or a confirmed 404
    - **Return value**: Path to cached file (or None if unavailable)
 
    Searches are NOT cached because:
@@ -312,7 +314,7 @@ Returns JSON with available files and their metadata.
 ### Cache Directory Structure
 
 ```
-$XDG_CACHE_HOME/mentalism-research/archives/
+$XDG_CACHE_HOME/archives-mcp/
 ├── {identifier}_{filename}.txt  # Cached text file content
 └── {identifier}.txt              # Cached text when auto-detected filename
 ```
@@ -342,31 +344,12 @@ This means:
 
 ### Cache Flow
 
-In `download_text()` method (client.py:455-519):
+In `download_text()`:
 
-1. **Lines 467-474**: Check cache first
-   ```python
-   cache_key = self._get_cache_key(identifier, file_name)
-   cache_path = self.cache_dir / f"{cache_key}.txt"
-
-   if cache_path.exists():
-       cached_text = cache_path.read_text(encoding='utf-8')
-       if cached_text == "404":
-           return None  # Previously failed
-       return cache_path  # Return path to cached file
-   ```
-
-2. **Lines 476-488**: If not cached, auto-detect and validate text file
-
-3. **Lines 490-512**: Download from archive.org
-
-4. **Line 511**: Write to cache and return path
-   ```python
-   self._write_to_cache(cache_key, content)
-   return cache_path  # Return path, not content
-   ```
-
-5. **Lines 480, 487, 498, 516**: Cache "404" on failures
+1. Return the cached path unless `refresh` was asked for; a sentinel entry returns None.
+2. Auto-detect the text file when none was named, or the named one is not text.
+3. Download, decode (decompressing `.gz`), and write to the cache.
+4. Write the sentinel only for a confirmed 404 or an item with no text file.
 
 ### Benefits
 
@@ -378,86 +361,33 @@ In `download_text()` method (client.py:455-519):
 
 ### Implementation Details
 
-**Cache methods** (client.py:610-626):
+**Cache methods**:
 - `_get_cache_key()` - Generates cache filename from identifier/filename
-- `_read_from_cache()` - Reads cached text if exists
 - `_write_to_cache()` - Writes text to cache file
+- `_is_unavailable_marker()` - Detects the sentinel, checking file size first so a
+  multi-megabyte entry is never read just to compare it against a 3-byte string
 
 **No cache eviction** - Files remain cached indefinitely. Manual cleanup required if disk space is a concern.
 
 **Thread safety** - Not currently implemented. Single-threaded usage assumed (typical for MCP servers).
 
-## Rate Limiting and Concurrency Control
+## Rate Limiting
 
-### Current Implementation
+Requests are spaced by a cross-process rate limiter (`ratelimit.py`), default 0.5s,
+overridable with `ARCHIVES_MIN_REQUEST_INTERVAL`. Search, metadata and download requests
+all pass through it.
 
-**NO rate limiting or concurrency control is implemented.**
+**Why cross-process rather than an instance or class attribute.** An in-process limiter
+was adequate while the only caller was a long-lived MCP server handling one request at a
+time. It is not adequate now: every CLI invocation is a separate process with its own
+state, and callers are expected to fan work out across several at once, so any in-process
+counter paces nothing. The limiter therefore keeps its timestamp in `.rate-limit` inside
+the cache directory, guarded by an exclusive `flock`, which every process sharing that
+cache observes.
 
-Both search and download requests go directly to archive.org without delays or throttling:
-
-- **Search** (client.py:370-372): Direct API call, no delay
-  ```python
-  client = await self._ensure_client()
-  response = await client.get(url)  # No rate limiting
-  ```
-
-- **Download** (client.py:497-498): Direct download, no delay
-  ```python
-  client = await self._ensure_client()
-  response = await client.get(download_url, timeout=DOWNLOAD_TIMEOUT_SECONDS)  # No rate limiting
-  ```
-
-### Why No Concurrency Control?
-
-Some Internet Archive client implementations include concurrency control such as:
-
-1. **Search lock**: `_search_lock = asyncio.Lock()` - Only one search at a time across all instances
-2. **Download semaphore**: `_download_semaphore = asyncio.Semaphore(10)` - Max 10 concurrent downloads
-
-These were intentionally omitted because:
-- MCP servers typically handle one request at a time (single-threaded)
-- archive.org is relatively permissive (no strict rate limits for normal usage)
-- Caching reduces repeated requests significantly
-- Simpler code for MCP use case
-
-### Why This Is Probably OK
-
-1. **MCP is single-threaded**: Claude Code sends one request at a time
-2. **Search is infrequent**: Users typically search once, get results, then download
-3. **Downloads are cached**: Repeated downloads return instantly from cache
-4. **archive.org is permissive**: No documented rate limits for reasonable usage
-5. **Timeouts exist**: 60s for downloads, 10s for searches prevent hanging
-
-### Risks
-
-1. **Bulk operations**: If a user tries to download many documents rapidly, could overwhelm archive.org
-2. **Multiple clients**: If multiple MCP clients connect, could send concurrent requests
-3. **Getting blocked**: archive.org might temporarily block aggressive usage
-
-### Future Improvement
-
-If rate limiting becomes necessary, add:
-
-```python
-class ArchivesClient:
-    _last_request_time: Optional[float] = None
-    _request_lock = asyncio.Lock()
-
-    async def _rate_limit(self):
-        """Ensure at least 1 second between requests"""
-        async with self._request_lock:
-            if self._last_request_time is not None:
-                elapsed = time.time() - self._last_request_time
-                if elapsed < 1.0:
-                    await asyncio.sleep(1.0 - elapsed)
-            self._last_request_time = time.time()
-```
-
-Call before each request:
-```python
-await self._rate_limit()
-response = await client.get(url)
-```
+The lock is never held across a sleep: a waiter releases it and retries, so one slow
+caller cannot wedge the others behind it. Wall-clock time is used rather than monotonic,
+since only wall clock is comparable between processes.
 
 ## Error Handling
 
@@ -469,17 +399,26 @@ response = await client.get(url)
 
 ### Download Errors
 
-- 404 Not Found → Cache "404", return None
-- 401/403 Access Denied → Cache "404", return None
-- Network errors → Return None
-- Gzip decompression errors → Bubble up as exceptions
+The governing rule: `None` means "archive.org says this does not exist". Anything that
+might succeed on a retry is raised, so that a transient failure is never mistaken for an
+absent document and never cached as one.
+
+- 404 Not Found → cache the sentinel, return None
+- Item has no text file → cache the sentinel, return None
+- 401/403 Access Denied → **raise** (restricted or throttled - indistinguishable)
+- Network errors → **raise**
+- Metadata API unreachable → **raise** (previously swallowed, which cached readable
+  documents as permanently unavailable)
+- Gzip / decode errors → **raise** as `RuntimeError`
+
+An unknown identifier is not an error: archive.org answers the files endpoint with
+`{"error": "Couldn't locate item ..."}`, which is read as "no files" and cached as
+unavailable.
 
 ### Graceful Degradation
 
 - File auto-detection via metadata API (prefers hOCR > DjVu > generic .txt)
-- No valid text file → Return error message
 - Invalid file type → Attempt to find alternative text file
-- File not found (404) → Cache failure to prevent retries
 
 ## Testing
 
@@ -507,8 +446,7 @@ Test the full installation:
 ### Potential Enhancements
 
 1. **Retry logic** - Add exponential backoff for transient failures
-2. **Rate limiting** - Implement request throttling to be respectful
-3. **Batch downloads** - Download multiple documents efficiently
+2. **Batch downloads** - Download multiple documents efficiently
 4. **Advanced filters** - Support more search parameters (date range, language, etc.)
 5. **Result ranking** - Improve relevance scoring
 6. **Snippet context** - Include more surrounding text in snippets

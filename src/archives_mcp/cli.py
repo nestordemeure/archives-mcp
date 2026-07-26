@@ -10,9 +10,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import math
 import sys
 from typing import Any
+
+import httpx
 
 from .client import ArchivesClient
 from .paths import cache_dir
@@ -103,15 +104,12 @@ def format_document(position: int, document: dict[str, Any], max_snippets: int) 
     return "\n".join(lines)
 
 
-def total_page_count(total_results: int) -> int:
-    return max(1, math.ceil(total_results / RESULTS_PER_PAGE))
-
-
 async def run_search(args: argparse.Namespace) -> int:
     """Fetch the requested pages, streaming results as each page arrives."""
     client = ArchivesClient(cache_dir=cache_dir(args.cache_dir), collection=args.collection)
     collected: list[dict[str, Any]] = []
     total_results = 0
+    total_pages = 1
 
     try:
         page = args.pages.first
@@ -123,7 +121,7 @@ async def run_search(args: argparse.Namespace) -> int:
                 return 1
 
             total_results = result["total_results"]
-            total_pages = total_page_count(total_results)
+            total_pages = result["total_pages"]
             documents = result["documents"]
 
             if page > total_pages:
@@ -153,7 +151,7 @@ async def run_search(args: argparse.Namespace) -> int:
                 "query": args.query,
                 "collection": args.collection,
                 "total_results": total_results,
-                "total_pages": total_page_count(total_results),
+                "total_pages": total_pages,
                 "pages_fetched": str(args.pages),
                 "documents": collected,
             },
@@ -171,14 +169,18 @@ async def run_get(args: argparse.Namespace) -> int:
     client = ArchivesClient(cache_dir=cache_dir(args.cache_dir))
 
     try:
-        path = await client.download_text(args.identifier)
+        path = await client.download_text(args.identifier, refresh=args.refresh)
+    except (httpx.HTTPError, RuntimeError) as error:
+        # Distinct from the None case below: this one may well succeed on a
+        # retry, and must not be read as "the document does not exist".
+        print(f"{PROGRAM_NAME}: could not fetch {args.identifier}: {error}", file=sys.stderr)
+        return 1
     finally:
         await client.close()
 
     if path is None:
         print(
-            f"{PROGRAM_NAME}: no OCR text available for {args.identifier} "
-            "(item missing, restricted, or not text)",
+            f"{PROGRAM_NAME}: archive.org has no OCR text for {args.identifier}",
             file=sys.stderr,
         )
         return 1
@@ -195,7 +197,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cache-dir",
         default=None,
-        help="override the download cache location (default: $XDG_CACHE_HOME/mentalism-research/archives)",
+        help="override the download cache location (default: $XDG_CACHE_HOME/archives-mcp)",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -242,6 +244,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     get.add_argument("identifier", help="archive.org item identifier, from search results")
+    get.add_argument(
+        "--refresh",
+        action="store_true",
+        help="re-download even if a cached copy exists",
+    )
     get.set_defaults(handler=run_get)
 
     return parser

@@ -4,34 +4,33 @@ Internet Archive client for MCP server.
 Provides access to search and download OCR text from archive.org.
 """
 
-import asyncio
 import gzip
 import json
-import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 from urllib.parse import urlencode, quote
 
 import httpx
 
 from .paths import cache_dir as default_cache_dir
+from .ratelimit import CrossProcessRateLimiter, configured_interval
 
 
 # HTTP status codes
 HTTP_UNAUTHORIZED = 401
 HTTP_FORBIDDEN = 403
 HTTP_NOT_FOUND = 404
-HTTP_CLIENT_ERROR_THRESHOLD = 400
-MAX_DOWNLOAD_RETRIES = 3
-INITIAL_RETRY_DELAY_SECONDS = 1
 DOWNLOAD_TIMEOUT_SECONDS = 60.0
-METADATA_MAX_RETRIES = 3
 METADATA_TIMEOUT_SECONDS = 30.0
-RETRYABLE_METADATA_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 ARCHIVE_BASE_URL = "https://archive.org"
+
+# Written in place of a document's text when archive.org confirms it does not
+# exist. Only a true 404 earns this: a transient failure must never be recorded
+# as permanent, or the document becomes invisible to every later search.
+UNAVAILABLE_SENTINEL = "404"
 
 
 class SearchServiceErrorType(str, Enum):
@@ -227,8 +226,8 @@ def sanitize_snippet(snippet: str | None, keep_highlights: bool = True) -> str:
 
     Internet Archive wraps matched terms in braces. Those markers are worth
     keeping by default: they show which token actually matched, which is how a
-    reader spots substring false positives such as "Her-{bert Reese}" for a
-    "Bert Reese" query. Nested braces are collapsed to a single pair.
+    reader spots substring false positives such as "Jo-{ann Hunter}" for an
+    "Ann Hunter" query. Nested braces are collapsed to a single pair.
     """
     if snippet is None:
         return ""
@@ -277,20 +276,6 @@ def coerce_page(fields: dict[str, Any]) -> int | None:
         return None
 
 
-def resolve_file_name(fields: dict[str, Any]) -> str | None:
-    """Get the full filename with extension for download purposes."""
-    filename = extract_scalar(fields.get("filename"))
-    if filename not in (None, ""):
-        return str(filename)
-
-    # Fallback to basename for backward compatibility
-    basename = extract_scalar(fields.get("file_basename"))
-    if basename not in (None, ""):
-        return str(basename)
-
-    return None
-
-
 class ArchivesClient:
     """Client for searching and downloading from Internet Archive"""
 
@@ -307,6 +292,12 @@ class ArchivesClient:
         self.cache_dir = Path(cache_dir) if cache_dir is not None else default_cache_dir()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._user_agent = 'archives-mcp/0.1.0'
+        # Shared with every other process using this cache, so that concurrent
+        # CLI invocations do not collectively hammer archive.org.
+        self._rate_limiter = CrossProcessRateLimiter(
+            state_file=self.cache_dir / ".rate-limit",
+            min_interval=configured_interval(),
+        )
 
     async def _ensure_client(self) -> httpx.AsyncClient:
         """Ensure async client is created"""
@@ -378,6 +369,7 @@ class ArchivesClient:
 
         try:
             client = await self._ensure_client()
+            await self._rate_limiter.acquire()
             response = await client.get(url)
             response.raise_for_status()
 
@@ -390,9 +382,15 @@ class ArchivesClient:
             # Process hits into documents
             documents = self._process_hits(hits)
 
+            # An empty result set is one empty page, not zero pages, matching
+            # how the other sources in this toolset report themselves.
+            rows_per_page = max(1, min(rows, 500))
+            total_pages = max(1, -(-total_results // rows_per_page))
+
             return {
                 'page': page,
                 'total_results': total_results,
+                'total_pages': total_pages,
                 'documents': documents
             }
 
@@ -401,6 +399,7 @@ class ArchivesClient:
                 'error': f"HTTP error: {str(e)}",
                 'page': page,
                 'total_results': 0,
+                'total_pages': 1,
                 'documents': []
             }
         except Exception as e:
@@ -408,6 +407,7 @@ class ArchivesClient:
                 'error': str(e),
                 'page': page,
                 'total_results': 0,
+                'total_pages': 1,
                 'documents': []
             }
 
@@ -462,71 +462,95 @@ class ArchivesClient:
 
         return documents
 
-    async def download_text(self, identifier: str, file_name: Optional[str] = None) -> Optional[Path]:
+    async def download_text(
+        self,
+        identifier: str,
+        file_name: Optional[str] = None,
+        refresh: bool = False
+    ) -> Optional[Path]:
         """
         Download OCR text for a document and return path to cached file.
 
         Args:
             identifier: Internet Archive item identifier
             file_name: Specific file to download (optional, will auto-detect if not provided)
+            refresh: Ignore any cached copy and fetch again
 
         Returns:
-            Path to the cached text file, or None if not available
+            Path to the cached text file, or None if the item genuinely has no
+            text available.
+
+        Raises:
+            httpx.HTTPError: the request failed for a reason that may not repeat
+            RuntimeError: the response could not be decoded
+
+        A returned None means "archive.org says this does not exist". Anything
+        that might succeed on a retry is raised instead, so that a network blip
+        is never mistaken for an absent document.
         """
         # Check cache first
         cache_key = self._get_cache_key(identifier, file_name)
         cache_path = self.cache_dir / f"{cache_key}.txt"
 
-        if cache_path.exists():
-            cached_text = cache_path.read_text(encoding='utf-8')
-            if cached_text == "404":
+        if cache_path.exists() and not refresh:
+            if self._is_unavailable_marker(cache_path):
                 return None
             return cache_path
 
-        # Auto-detect file if not provided
-        if file_name is None:
+        # Auto-detect file if not provided, or if the given one is not text
+        if file_name is None or not self._is_valid_text_file(file_name):
             file_name = await self._find_text_file(identifier)
             if file_name is None:
-                self._write_to_cache(cache_key, "404")
-                return None
-
-        # Validate file type
-        if not self._is_valid_text_file(file_name):
-            file_name = await self._find_text_file(identifier)
-            if file_name is None:
-                self._write_to_cache(cache_key, "404")
+                # The item exists but carries no usable text file.
+                self._write_to_cache(cache_key, UNAVAILABLE_SENTINEL)
                 return None
 
         # Download the file
         download_url = f"https://archive.org/download/{identifier}/{quote(file_name)}"
 
+        client = await self._ensure_client()
+        await self._rate_limiter.acquire()
+        response = await client.get(download_url, timeout=DOWNLOAD_TIMEOUT_SECONDS)
+
+        if response.status_code == HTTP_NOT_FOUND:
+            self._write_to_cache(cache_key, UNAVAILABLE_SENTINEL)
+            return None
+
+        if response.status_code in (HTTP_UNAUTHORIZED, HTTP_FORBIDDEN):
+            # Restricted *or* throttled - archive.org uses 403 for both, so this
+            # must not be cached as permanently unavailable.
+            raise httpx.HTTPStatusError(
+                f"archive.org refused {identifier} with {response.status_code}. "
+                "The item may be access-restricted, or the request may have been "
+                "throttled; retry before concluding it is unavailable.",
+                request=response.request,
+                response=response,
+            )
+
+        response.raise_for_status()
+
         try:
-            client = await self._ensure_client()
-            response = await client.get(download_url, timeout=DOWNLOAD_TIMEOUT_SECONDS)
-
-            if response.status_code == HTTP_NOT_FOUND:
-                self._write_to_cache(cache_key, "404")
-                return None
-
-            response.raise_for_status()
             content_bytes = response.content
-
-            # Decode content
             if file_name.endswith('.gz'):
-                content = gzip.decompress(content_bytes).decode('utf-8')
-            else:
-                content = content_bytes.decode('utf-8')
+                content_bytes = gzip.decompress(content_bytes)
+            content = content_bytes.decode('utf-8')
+        except (gzip.BadGzipFile, UnicodeDecodeError) as error:
+            raise RuntimeError(
+                f"Could not decode the text file {file_name} for {identifier}: {error}"
+            ) from error
 
-            # Cache and return path
-            self._write_to_cache(cache_key, content)
-            return cache_path
+        self._write_to_cache(cache_key, content)
+        return cache_path
 
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code in (HTTP_UNAUTHORIZED, HTTP_FORBIDDEN):
-                self._write_to_cache(cache_key, "404")
-            return None
-        except Exception:
-            return None
+    def _is_unavailable_marker(self, cache_path: Path) -> bool:
+        """Whether a cache entry records a confirmed-absent document.
+
+        Checks the size first: the marker is a few bytes, while a real entry can
+        run to megabytes that there is no reason to read.
+        """
+        if cache_path.stat().st_size > len(UNAVAILABLE_SENTINEL):
+            return False
+        return cache_path.read_text(encoding='utf-8').strip() == UNAVAILABLE_SENTINEL
 
     def _is_valid_text_file(self, file_name: str) -> bool:
         """Check if a filename indicates it's a plain text file"""
@@ -546,11 +570,13 @@ class ArchivesClient:
         return not any(file_name_lower.endswith(suffix) for suffix in suspicious_suffixes)
 
     async def _find_text_file(self, identifier: str) -> Optional[str]:
-        """Find and return a valid text file for an item"""
-        try:
-            files = await self._fetch_item_files_metadata(identifier)
-        except Exception:
-            return None
+        """Find and return a valid text file for an item.
+
+        Returns None only when the item genuinely offers no text file. A failure
+        to reach the metadata API propagates, because treating it as "no text"
+        would cache the item as permanently unavailable.
+        """
+        files = await self._fetch_item_files_metadata(identifier)
 
         if not files:
             return None
@@ -601,16 +627,29 @@ class ArchivesClient:
         metadata_url = f"https://archive.org/metadata/{identifier}/files"
 
         client = await self._ensure_client()
+        await self._rate_limiter.acquire()
         response = await client.get(metadata_url, timeout=METADATA_TIMEOUT_SECONDS)
         response.raise_for_status()
         data = response.json()
 
-        if not isinstance(data, dict) or "result" not in data:
-            raise RuntimeError(f"Unexpected metadata API response format")
+        if not isinstance(data, dict):
+            raise RuntimeError(
+                f"Metadata API returned an unexpected shape for {identifier}: "
+                f"expected an object, got {type(data).__name__}"
+            )
+
+        if "error" in data or "result" not in data:
+            # archive.org answers `{"error": "Couldn't locate item ..."}` for an
+            # identifier that does not exist. That is a real answer - the item
+            # has no files - not a malformed response.
+            return []
 
         files = data["result"]
         if not isinstance(files, list):
-            raise RuntimeError(f"Metadata API files field is not a list")
+            raise RuntimeError(
+                f"Metadata API returned a non-list 'result' for {identifier}: "
+                f"{type(files).__name__}"
+            )
 
         return files
 
@@ -619,13 +658,6 @@ class ArchivesClient:
         if file_name:
             return f"{identifier}_{file_name}".replace('/', '_')
         return identifier.replace('/', '_')
-
-    def _read_from_cache(self, cache_key: str) -> Optional[str]:
-        """Read from cache if exists"""
-        cache_file = self.cache_dir / f"{cache_key}.txt"
-        if cache_file.exists():
-            return cache_file.read_text(encoding='utf-8')
-        return None
 
     def _write_to_cache(self, cache_key: str, content: str) -> None:
         """Write to cache"""

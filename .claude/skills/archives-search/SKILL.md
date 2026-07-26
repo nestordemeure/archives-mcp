@@ -7,7 +7,7 @@ description: Search the full text of Internet Archive books and periodicals with
 
 Full-text search across archive.org's digitised texts. Strongest on English-language
 books and periodicals; the `iapsop` collection covers spiritualist and occult
-periodicals specifically, which is where much mentalism history sits.
+periodicals specifically.
 
 ## Commands
 
@@ -29,7 +29,7 @@ document: identifier, date, title, URL, and snippets with the matched terms in `
 - Parentheses group: `(Houdini OR Kellar) AND escape`
 - `creator:Houdini` searches a specific field; `magi*` wildcards
 
-**Matching is document-level, not page-level.** `"Bert Reese" AND Edison` matches a
+**Matching is document-level, not page-level.** `"Harry Houdini" AND Edison` matches a
 900-page volume containing both, hundreds of pages apart, with no relationship between
 them. Treat multi-term AND results as leads, never as evidence of a connection.
 
@@ -47,11 +47,11 @@ more than it returns.
 
 The braces show which token actually matched — that is the single most useful signal here.
 
-- **Substring matches inside longer names.** A `"Bert Reese"` query returns
-  `Al{bert Reese}` and `Her{bert Reese}`. Read the braces before believing a hit.
-- **Hyphenation across line breaks.** OCR splits words, so `Her- {bert Reese}` rejoins to
-  "Herbert Reese" — a mismatch, despite looking like a clean hit.
-- **OCR noise inside the match**, e.g. `{Bert) Reese}`. Usually still the right person;
+- **Substring matches inside longer names.** An `"Ann Hunter"` query returns
+  `Jo{ann Hunter}` and `Le{ann Hunter}`. Read the braces before believing a hit.
+- **Hyphenation across line breaks.** OCR splits words, so `Jo- {ann Hunter}` rejoins to
+  "Joann Hunter" — a mismatch, despite looking like a clean hit.
+- **OCR noise inside the match**, e.g. `{Ann) Hunter}`. Usually still the right person;
   judge from surrounding context.
 - **Bibliographies and indexes.** A name in a citation list or a table of contents is a
   passing mention, not substantive content.
@@ -64,6 +64,14 @@ snippets suggest it is genuinely worth reading.
 ## Cost
 
 Search is cheap. `get` is not: downloads are large and cached under
-`$XDG_CACHE_HOME/mentalism-research/archives`. When reading many documents, dispatch
+`$XDG_CACHE_HOME/archives-mcp`. When reading many documents, dispatch
 subagents so the OCR text stays out of the main context, and have them report back
 findings with page numbers and quotes.
+
+Requests are paced to roughly two per second, and that pacing is shared across every
+process — so parallel subagents share one budget rather than each getting their own.
+Fanning out widely speeds up the reading, not the fetching.
+
+If a `get` fails, read the message before concluding anything: "no OCR text" means the
+item genuinely has none, while any other error means the request may simply be worth
+retrying. Use `--refresh` to re-download something already cached.

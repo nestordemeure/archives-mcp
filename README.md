@@ -45,16 +45,16 @@ gemini mcp list   # For Gemini CLI
 ### CLI
 
 ```bash
-archives search '"Bert Reese"'                   # first page of results
-archives search '"Bert Reese"' --pages all       # every page, one invocation
-archives search 'billet' --collection iapsop     # restrict to one collection
+archives search '"Harry Houdini"'                # first page of results
+archives search '"Harry Houdini"' --pages all    # every page, one invocation
+archives search 'seance' --collection iapsop     # restrict to one collection
 archives get PsychicalResearchReview1917         # prints path to the cached OCR text
 ```
 
 Search prints a total, then one block per document with snippets showing matched terms in
 `{braces}`. Add `--json` for machine-readable output.
 
-Downloads are cached in `$XDG_CACHE_HOME/mentalism-research/archives` (override with
+Downloads are cached in `$XDG_CACHE_HOME/archives-mcp` (override with
 `--cache-dir` or `ARCHIVES_CACHE_DIR`). The cache location does not depend on the working
 directory, so the CLI can be run from anywhere.
 
