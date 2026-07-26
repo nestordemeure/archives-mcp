@@ -75,3 +75,8 @@ Fanning out widely speeds up the reading, not the fetching.
 If a `get` fails, read the message before concluding anything: "no OCR text" means the
 item genuinely has none, while any other error means the request may simply be worth
 retrying. Use `--refresh` to re-download something already cached.
+
+**Over-querying gets you banned, and the ban outlasts the session.** This is a free public
+service; a sweep that looks thorough from here looks like scraping from theirs. If requests
+start failing or returning something that is not what you asked for, stop and say so rather
+than retrying into a longer ban.
