@@ -42,10 +42,10 @@ gemini mcp list   # For Gemini CLI
 ### CLI
 
 ```bash
-archives search '"Harry Houdini"'                # first page of results
-archives search '"Harry Houdini"' --pages all    # every page, one invocation
-archives search 'seance' --collection iapsop     # restrict to one collection
-archives get PsychicalResearchReview1917         # prints path to the cached OCR text
+archives search '"Charles Dickens"'                    # first page of results
+archives search '"Charles Dickens"' --pages all        # every page, one invocation
+archives search 'lighthouse' --collection americana    # restrict to one collection
+archives get lighthousesthei01hardgoog                 # prints path to the cached OCR text
 ```
 
 Search prints a total, then one block per document with snippets showing matched terms in `{braces}`. Add `--json` for machine-readable output.
