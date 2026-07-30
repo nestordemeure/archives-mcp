@@ -62,12 +62,27 @@ The search functionality uses Internet Archive's fulltext search API:
 2. **ArchivesClient.search()** - Main search method
    - Constructs query with mediatype:texts filter
    - Optional collection filtering (e.g., "iapsop")
+   - Optional metadata filters: `from_year`/`to_year`, `language`, `title`, `creator`, `subject`
    - Fetches results from `/services/search/beta/page_production/`
    - Processes hits into simplified document format
    - Deduplicates by item identifier
    - Extracts snippets with search term highlighting
 
-3. **Search Result Processing**
+3. **Metadata filters**
+
+   Every filter is ANDed onto the Lucene `user_query`. That is the only mechanism the full-text backend honours, and the alternatives are traps rather than merely unsupported:
+
+   - `filter_map`, the search service's own faceting parameter, is **accepted and then silently ignored** by the `fts` backend. A request carrying `filter_map={"language":{"French":"inc"}}` returns HTTP 200 with the *unfiltered* total, which is indistinguishable from a filter that matched everything. Never route a filter through it.
+   - A `date:[… TO …]` range makes the backend fail: the FTS API answers 502 and the gateway turns that into a 400. Only `year` is usable for dating, which is why the flags are `--from-year`/`--to-year` rather than full dates.
+   - An unknown field name yields `total=0`, not an error and not the unfiltered set. So a filter typo looks exactly like "this material does not exist" — hence no filter is exposed that has not been confirmed to narrow a real query live.
+
+   `year_clause()` builds an open-ended range (`year:[1880 TO *]`) so either bound may be omitted, and raises `ValueError` when the range runs backwards, which would otherwise return a silent zero. `language_clause()` expands a language to every spelling archive.org is known to use, because uploaders supply a name (`French`), a MARC code (`fre`) or the terminology variant (`fra`) and those select different items: 1,391, 6,976 and a further slice of the same corpus respectively for one test query. The remaining filters are phrase matches built by `metadata_clause()`, with values quoted by `quote_phrase()` so that a two-word value is not split into two loose terms.
+
+   **All of these filters read item metadata, and a great deal of archive.org has none.** Every item in the `iapsop` collection, for instance, carries no year, date, language, creator or subject whatsoever - only a title equal to its identifier. Any of these filters therefore reduces an iapsop search to zero results. The behaviour is correct and the docs say so loudly; there is nothing to fix in the client.
+
+   `ocr_detected_lang` (e.g. `ocr_detected_lang:en`) *is* queryable and does narrow, and it survives on items with no catalogued language. It is deliberately not wired to `--language`: it is the scanner's guess about a scan rather than a catalogue statement, and it uses a third vocabulary (ISO 639-1) again. The skill documents it as an in-query escape hatch instead.
+
+4. **Search Result Processing**
    - `get_identifier()` - Extracts item ID from hit
    - `extract_scalar()` - Unwraps nested API response values
    - `extract_list()` - Extracts lists from various response formats
@@ -420,9 +435,8 @@ Test the full installation:
 
 1. **Retry logic** - Add exponential backoff for transient failures
 2. **Batch downloads** - Download multiple documents efficiently
-4. **Advanced filters** - Support more search parameters (date range, language, etc.)
-5. **Result ranking** - Improve relevance scoring
-6. **Snippet context** - Include more surrounding text in snippets
+3. **Result ranking** - Improve relevance scoring
+4. **Snippet context** - Include more surrounding text in snippets
 
 ### Known Limitations
 
@@ -431,6 +445,7 @@ Test the full installation:
 3. **English-focused** - Better for English documents (OCR quality varies)
 4. **Cache management** - No automatic cache cleanup/expiration
 5. **Error messages** - Could provide more specific guidance for failures
+6. **Metadata filters only reach catalogued items** - archive.org's item metadata is uneven, so a year, language, creator or subject filter excludes everything that was uploaded without it. Nothing in the client can recover a field the archive does not hold
 
 ## Appendix: Query Syntax
 

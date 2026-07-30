@@ -104,6 +104,31 @@ def format_document(position: int, document: dict[str, Any], max_snippets: int) 
     return "\n".join(lines)
 
 
+def describe_filters(args: argparse.Namespace) -> str:
+    """Summarise the active filters for the result header, or "" if there are none.
+
+    Worth printing: a filtered total looks like a small archive until you can see
+    what was excluded to produce it.
+    """
+    parts: list[str] = []
+    if args.from_year is not None or args.to_year is not None:
+        first = str(args.from_year) if args.from_year is not None else "…"
+        last = str(args.to_year) if args.to_year is not None else "…"
+        parts.append(f"{first}–{last}")
+    for label, value in (
+        ("collection", args.collection),
+        ("language", args.language),
+        ("title", args.title),
+        ("creator", args.creator),
+        ("subject", args.subject),
+    ):
+        if value:
+            parts.append(f"{label}={value}")
+    if not parts:
+        return ""
+    return f" [{', '.join(parts)}]"
+
+
 async def run_search(args: argparse.Namespace) -> int:
     """Fetch the requested pages, streaming results as each page arrives."""
     client = ArchivesClient(cache_dir=cache_dir(args.cache_dir), collection=args.collection)
@@ -114,7 +139,21 @@ async def run_search(args: argparse.Namespace) -> int:
     try:
         page = args.pages.first
         while args.pages.contains(page):
-            result = await client.search(query=args.query, page=page, rows=RESULTS_PER_PAGE)
+            try:
+                result = await client.search(
+                    query=args.query,
+                    page=page,
+                    rows=RESULTS_PER_PAGE,
+                    from_year=args.from_year,
+                    to_year=args.to_year,
+                    language=args.language,
+                    title=args.title,
+                    creator=args.creator,
+                    subject=args.subject,
+                )
+            except ValueError as error:
+                print(f"{PROGRAM_NAME}: {error}", file=sys.stderr)
+                return 2
 
             if error := result.get("error"):
                 print(f"{PROGRAM_NAME}: page {page} failed: {error}", file=sys.stderr)
@@ -131,7 +170,10 @@ async def run_search(args: argparse.Namespace) -> int:
                 collected.extend(documents)
             else:
                 scope = f"page {page} of {total_pages}"
-                print(f"# {args.query} — {total_results} results, {scope}")
+                print(
+                    f"# {args.query}{describe_filters(args)} — "
+                    f"{total_results} results, {scope}"
+                )
                 if not documents:
                     print("  (no documents on this page)")
                 for offset, document in enumerate(documents):
@@ -146,10 +188,23 @@ async def run_search(args: argparse.Namespace) -> int:
         await client.close()
 
     if args.json:
+        filters = {
+            name: value
+            for name, value in (
+                ("from_year", args.from_year),
+                ("to_year", args.to_year),
+                ("language", args.language),
+                ("title", args.title),
+                ("creator", args.creator),
+                ("subject", args.subject),
+            )
+            if value is not None
+        }
         json.dump(
             {
                 "query": args.query,
                 "collection": args.collection,
+                "filters": filters,
                 "total_results": total_results,
                 "total_pages": total_pages,
                 "pages_fetched": str(args.pages),
@@ -230,6 +285,62 @@ def build_parser() -> argparse.ArgumentParser:
         "--collection",
         default=None,
         help="restrict to one archive.org collection, e.g. iapsop",
+    )
+    search.add_argument(
+        "--from-year",
+        type=int,
+        metavar="YEAR",
+        help=(
+            "earliest publication year, inclusive. Reads the item's year metadata, "
+            "so items with no year at all are silently dropped"
+        ),
+    )
+    search.add_argument(
+        "--to-year",
+        type=int,
+        metavar="YEAR",
+        help=(
+            "latest publication year, inclusive. Same caveat as --from-year: "
+            "undated items disappear from the results"
+        ),
+    )
+    search.add_argument(
+        "--language",
+        metavar="NAME",
+        help=(
+            "language of the item, e.g. French or fre. archive.org records this "
+            "inconsistently, as a name or a MARC code, so every spelling of a "
+            "named language is searched at once; an unrecognised value is used "
+            "verbatim. Items with no language metadata are dropped"
+        ),
+    )
+    search.add_argument(
+        "--title",
+        metavar="TEXT",
+        help=(
+            "phrase that must appear in the item's title, e.g. 'Household Words'. "
+            "This is the catalogue title of the whole volume or issue, not the "
+            "page the match sits on"
+        ),
+    )
+    search.add_argument(
+        "--creator",
+        metavar="NAME",
+        help=(
+            "phrase that must appear in the item's creator field, e.g. "
+            "'Dickens, Charles'. Selects works BY someone rather than works "
+            "mentioning them; the form varies per item, so copy it from a "
+            "result line when precision matters"
+        ),
+    )
+    search.add_argument(
+        "--subject",
+        metavar="HEADING",
+        help=(
+            "phrase that must appear in the item's subject headings, e.g. "
+            "'Historical Journals'. Many items carry no subject at all, and "
+            "this excludes every one of them"
+        ),
     )
     search.add_argument("--json", action="store_true", help="emit JSON instead of text")
     search.set_defaults(handler=run_search)

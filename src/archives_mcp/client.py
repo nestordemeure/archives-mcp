@@ -33,6 +33,52 @@ ARCHIVE_BASE_URL = "https://archive.org"
 UNAVAILABLE_SENTINEL = "404"
 
 
+# archive.org stores an item's language as whatever the uploader supplied: an
+# English name ("French"), a MARC bibliographic code ("fre"), or the ISO 639-2/T
+# terminology variant ("fra"). Those forms select different, only partly
+# overlapping sets: a "Charles Dickens" search filtered to language:French
+# returns 1,391 items, while language:fre returns 6,976 and the two together
+# return 8,367. A filter that passed a single form through would therefore hide
+# most of the material it claims to select, so every known form of a language is
+# searched at once.
+_LANGUAGE_FORMS: tuple[tuple[str, ...], ...] = (
+    ("English", "eng"),
+    ("French", "fre", "fra"),
+    ("German", "ger", "deu"),
+    ("Spanish", "spa"),
+    ("Italian", "ita"),
+    ("Dutch", "dut", "nld"),
+    ("Portuguese", "por"),
+    ("Latin", "lat"),
+    ("Greek", "gre", "ell", "grc"),
+    ("Russian", "rus"),
+    ("Polish", "pol"),
+    ("Czech", "cze", "ces"),
+    ("Hungarian", "hun"),
+    ("Romanian", "rum", "ron"),
+    ("Swedish", "swe"),
+    ("Danish", "dan"),
+    ("Norwegian", "nor"),
+    ("Finnish", "fin"),
+    ("Icelandic", "ice", "isl"),
+    ("Welsh", "wel", "cym"),
+    ("Catalan", "cat"),
+    ("Turkish", "tur"),
+    ("Hebrew", "heb"),
+    ("Yiddish", "yid"),
+    ("Arabic", "ara"),
+    ("Chinese", "chi", "zho"),
+    ("Japanese", "jpn"),
+    ("Hindi", "hin"),
+    ("Urdu", "urd"),
+    ("Sanskrit", "san"),
+)
+
+LANGUAGE_ALIASES: dict[str, tuple[str, ...]] = {
+    form.lower(): group for group in _LANGUAGE_FORMS for form in group
+}
+
+
 class SearchServiceErrorType(str, Enum):
     NETWORK = "networkError"
     DECODING = "decodingError"
@@ -259,6 +305,59 @@ def build_item_url(identifier: str) -> str:
     return f"{base}/details/{identifier}"
 
 
+def quote_phrase(value: str) -> str:
+    """Quote a metadata value so it matches as one phrase rather than loose words.
+
+    Without the quotes, a two-word value would be split by the query parser and
+    match items carrying only one of the words.
+    """
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def year_clause(from_year: int | None, to_year: int | None) -> str | None:
+    """Build the ``year`` range clause, open-ended on either side.
+
+    Returns None when neither bound was given, so an unfiltered search keeps the
+    query it had before.
+    """
+    if from_year is None and to_year is None:
+        return None
+    if from_year is not None and to_year is not None and from_year > to_year:
+        raise ValueError(
+            f"the year range runs backwards: {from_year} is later than {to_year}"
+        )
+    lower = "*" if from_year is None else str(from_year)
+    upper = "*" if to_year is None else str(to_year)
+    return f"year:[{lower} TO {upper}]"
+
+
+def language_clause(language: str) -> str | None:
+    """Build the ``language`` clause, covering every known spelling of a language.
+
+    A value that matches no known language is passed through as given, since
+    archive.org holds many languages this table does not name.
+    """
+    value = language.strip()
+    if not value:
+        return None
+    forms = LANGUAGE_ALIASES.get(value.lower(), (value,))
+    if len(forms) == 1:
+        return f"language:{quote_phrase(forms[0])}"
+    alternatives = " OR ".join(quote_phrase(form) for form in forms)
+    return f"language:({alternatives})"
+
+
+def metadata_clause(field: str, value: str | None) -> str | None:
+    """Build a phrase clause against one metadata field, or None if unfiltered."""
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    return f"{field}:{quote_phrase(text)}"
+
+
 def coerce_page(fields: dict[str, Any]) -> int | None:
     raw_value = extract_scalar(fields.get("page_num"))
     if raw_value is None:
@@ -319,26 +418,61 @@ class ArchivesClient:
         self,
         query: str,
         page: int = 1,
-        rows: int = 100
+        rows: int = 100,
+        from_year: Optional[int] = None,
+        to_year: Optional[int] = None,
+        language: Optional[str] = None,
+        title: Optional[str] = None,
+        creator: Optional[str] = None,
+        subject: Optional[str] = None,
     ) -> dict[str, Any]:
         """
         Search Internet Archive for documents matching the query.
+
+        Every filter is optional; omitting all of them searches exactly as
+        before. Each one narrows on the *item's catalogue metadata*, not on the
+        page the match was found on, and each therefore drops items whose
+        metadata does not carry that field at all.
 
         Args:
             query: Search query string
             page: Page number (1-indexed)
             rows: Results per page (default 100, max 500)
+            from_year: Earliest publication year, inclusive
+            to_year: Latest publication year, inclusive
+            language: Language of the item, as a name ("French") or a MARC code
+                ("fre"); all known spellings of a named language are searched
+            title: Phrase that must appear in the item's title
+            creator: Phrase that must appear in the item's creator field
+            subject: Phrase that must appear in the item's subject headings
 
         Returns:
             Dictionary containing:
             - page: Current page number
             - total_results: Total number of results
             - documents: List of documents with metadata and snippets
+
+        Raises:
+            ValueError: from_year is later than to_year
         """
         query_parts: list[str] = []
         if self.collection:
             query_parts.append(f"collection:{self.collection}")
         query_parts.append("mediatype:texts")
+
+        # Filters are ANDed onto the query, which is the only mechanism the
+        # full-text backend honours: it accepts the search service's
+        # `filter_map` parameter and then silently ignores it, returning the
+        # unfiltered result set.
+        filter_clauses = [
+            year_clause(from_year, to_year),
+            language_clause(language) if language is not None else None,
+            metadata_clause("title", title),
+            metadata_clause("creator", creator),
+            metadata_clause("subject", subject),
+        ]
+        query_parts.extend(clause for clause in filter_clauses if clause is not None)
+
         if query.strip():
             query_parts.append(f"({query.strip()})")
 

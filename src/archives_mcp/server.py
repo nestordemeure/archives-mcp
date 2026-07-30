@@ -33,7 +33,13 @@ async def get_client() -> ArchivesClient:
 async def search_archive(
     query: str,
     page: int = 1,
-    collection: Optional[str] = None
+    collection: Optional[str] = None,
+    from_year: Optional[int] = None,
+    to_year: Optional[int] = None,
+    language: Optional[str] = None,
+    title: Optional[str] = None,
+    creator: Optional[str] = None,
+    subject: Optional[str] = None,
 ) -> dict:
     """
     Search Internet Archive for text documents matching a query.
@@ -51,10 +57,26 @@ async def search_archive(
     - Use - for NOT (e.g., "magic -card" excludes documents with "card")
     - Use parentheses for grouping (e.g., "(Houdini OR Kellar) AND escape")
 
+    Filters: every filter below is optional and narrows on the item's catalogue
+    metadata, not on the page the match was found on. Each one therefore drops
+    items whose metadata omits that field entirely - undated items vanish under
+    a year range, uncatalogued ones under a subject.
+
     Args:
         query: Search query string
         page: Page number for pagination, 1-indexed (default: 1)
         collection: Optional collection filter (e.g., "iapsop" for International Association for the Preservation of Spiritualist and Occult Periodicals)
+        from_year: Earliest publication year, inclusive
+        to_year: Latest publication year, inclusive
+        language: Language of the item, as a name ("French") or a MARC code
+            ("fre"). archive.org records this inconsistently, so every known
+            spelling of a named language is searched together; an unrecognised
+            value is used verbatim
+        title: Phrase that must appear in the item's title, e.g. "Household Words"
+        creator: Phrase that must appear in the item's creator field, e.g.
+            "Dickens, Charles". Selects works BY someone, not works that mention them
+        subject: Phrase that must appear in the item's subject headings, e.g.
+            "Historical Journals"
 
     Returns:
         Dictionary containing:
@@ -72,6 +94,7 @@ async def search_archive(
     Example:
         search_archive("spiritualism", page=1)
         search_archive("Houdini escape", page=2, collection="magicperiodicals")
+        search_archive("second sight", from_year=1880, to_year=1900, language="English")
     """
     # Create a new client if collection is specified
     if collection:
@@ -80,7 +103,17 @@ async def search_archive(
         client = await get_client()
 
     try:
-        results = await client.search(query=query, page=page, rows=100)
+        results = await client.search(
+            query=query,
+            page=page,
+            rows=100,
+            from_year=from_year,
+            to_year=to_year,
+            language=language,
+            title=title,
+            creator=creator,
+            subject=subject,
+        )
         return results
     except Exception as e:
         return {
@@ -164,7 +197,8 @@ Features:
 - Paginated search results (100 documents per page)
 - Full OCR text extraction from documents
 - Automatic text file detection (prefers hOCR > DjVu > generic text)
-- Collection filtering for specialized searches
+- Metadata filters: collection, year range, language, title, creator, subject
+  (each drops items whose metadata lacks that field)
 - Local caching to minimize repeated downloads
 
 Popular Collections:
