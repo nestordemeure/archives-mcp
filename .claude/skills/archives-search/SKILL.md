@@ -29,10 +29,6 @@ archives get <identifier>     # download OCR text, prints path to the cached fil
 
 **Matching is document-level, not page-level.** `"Harry Houdini" AND Edison` matches a 900-page volume containing both, hundreds of pages apart, with no relationship between them. Treat multi-term AND results as leads, never as evidence of a connection.
 
-Normally that costs you nothing you cannot get back: `get` downloads the item's text and a local grep recovers the position. **The exception is the `mediahistory` collection — the entertainment trade press — where it cannot be recovered at all.** Those volumes' OCR carries no page boundaries of any kind, so `archives get variety04-1906-10` returns 881 KB of text in which the phrase is findable and uncitable. `lantern` is a second index over exactly this collection and resolves the same hits to a leaf; see `sources/lantern.md`. Use it when the material is trade press and you need a page to cite, or the stage-versus-film split that its `--collection 'Theatre and Vaudeville'` gives and archive.org has no equivalent for.
-
-**The two are not independent sources, and their totals must never be added.** They index one archive: `"mind reader"` is 1,142 documents here against 1,783 pages across roughly 1,090 of the same volumes there. Both return snippets, so triage is no reason to prefer either.
-
 Combine alternatives into one query rather than running several searches — one `(A OR B OR C)` call costs a fraction of three separate ones.
 
 ## Filters
