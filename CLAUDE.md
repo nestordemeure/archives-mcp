@@ -1,50 +1,50 @@
 # Internet Archive MCP - Internal Documentation
 
-This document explains the inner workings of the Internet Archive implementation.
+This document explains how the Internet Archive implementation operates.
 
 ## Architecture Overview
 
-`client.py` holds all the behaviour. Everything else is a thin presentation layer over it, so search semantics, caching and error handling stay identical no matter how it is called.
+`client.py` holds all the behaviour. Each other module is a thin presentation layer over it, so the search semantics, the cache and the error handling stay identical for each method of access.
 
-1. **client.py** - Core Internet Archive client with search and download functionality
-2. **server.py** - FastMCP server exposing tools to MCP clients
-3. **cli.py** - `archives` command-line interface, used by the `archives-search` skill
-4. **paths.py** - Cache location resolution, shared by the server and the CLI
-5. **install.py** - MCP server installation helper
+1. **client.py** - the core Internet Archive client, with the search and download functions
+2. **server.py** - the FastMCP server that shows the tools to the MCP clients
+3. **cli.py** - the `archives` command-line interface, which the `archives-search` skill uses
+4. **paths.py** - the cache location, shared by the server and the CLI
+5. **install.py** - the helper that installs the MCP server
 
-### Why two front-ends
+### Why there are two front ends
 
-The MCP server suits clients that speak MCP. The CLI suits agents driven through a shell: its tool schema costs nothing until the command is actually run, so it does not occupy context in sessions that never touch this archive. The bundled skill under `.claude/skills/archives-search/` documents the CLI for that use.
+The MCP server suits a client that speaks MCP. The CLI suits an agent driven through a shell: its tool schema costs nothing until a person runs the command, so it does not occupy the context in a session that never uses this archive. The bundled skill under `.claude/skills/archives-search/` documents the CLI for that use.
 
 ### paths.py
 
-The cache must not depend on the working directory. The CLI is installed globally and run from whatever project the researcher is in, so a CWD-relative cache would scatter downloads across unrelated folders and destroy the hit rate. `cache_dir()` resolves, in order: an explicit override, `ARCHIVES_CACHE_DIR`, then `$XDG_CACHE_HOME/archives-mcp` (`~/.cache` by default).
+The cache must not depend on the working directory. The CLI has a global installation and runs from whichever project the researcher is in, so a cache relative to the working directory would put the downloads across unrelated folders and would destroy the hit rate. `cache_dir()` resolves the location in this order: an explicit override, then `ARCHIVES_CACHE_DIR`, then `$XDG_CACHE_HOME/archives-mcp` (`~/.cache` by default).
 
 ## Design Decisions
 
 ### Core Architecture
 
-This implementation follows a clean, modular architecture:
+This implementation follows a clean modular architecture:
 
-- FastMCP framework for MCP protocol handling
-- Async/await for all I/O operations
-- Local caching to minimize repeated API calls
-- Global client instance for connection pooling
+- The FastMCP framework handles the MCP protocol
+- Async/await for each I/O operation
+- A local cache, to keep the repeated API calls low
+- A global client instance, for connection pooling
 
 ### Implementation Approach
 
-The core search and download logic implements Internet Archive's fulltext search API:
+The core search logic and download logic implement the fulltext search API of Internet Archive:
 
-- Search functionality uses the undocumented fulltext search API
-- Download logic retrieves OCR text files directly
-- Intelligent text file detection (hOCR > DjVu > generic)
-- Local caching for performance
+- The search function uses the fulltext search API, which has no documentation
+- The download logic retrieves the OCR text files directly
+- Intelligent detection of the text file (hOCR > DjVu > generic)
+- A local cache, for performance
 
-Key design choices:
-- Simplified to focus on MCP use cases (search + download)
-- No datasource abstraction layer - direct API integration
-- Synchronous tool interface (async implementation internal)
-- Simple result format optimized for MCP tool output
+Key decisions:
+- Simplified to the MCP uses (search + download)
+- No datasource abstraction layer — a direct integration with the API
+- A synchronous tool interface (the implementation is async internally)
+- A simple result format, optimised for the MCP tool output
 
 ## Component Details
 
@@ -52,117 +52,117 @@ Key design choices:
 
 #### Search Implementation
 
-The search functionality uses Internet Archive's fulltext search API:
+The search function uses the fulltext search API of Internet Archive:
 
-1. **SearchParamURLGenerator** - Builds search URLs with proper query parameters
+1. **SearchParamURLGenerator** - builds the search URLs with the correct query parameters
    - Mirrors the TypeScript implementation from @internetarchive/search-service
    - Supports complex queries: AND, OR, NOT, exact phrases, parentheses
-   - Handles pagination, field selection, sorting, aggregations
+   - Handles the pagination, the field selection, the sorting and the aggregations
 
-2. **ArchivesClient.search()** - Main search method
-   - Constructs query with mediatype:texts filter
-   - Optional collection filtering (e.g., "iapsop")
+2. **ArchivesClient.search()** - the main search method
+   - Builds the query with a `mediatype:texts` filter
+   - An optional collection filter (for example, "iapsop")
    - Optional metadata filters: `from_year`/`to_year`, `language`, `title`, `creator`, `subject`
-   - Fetches results from `/services/search/beta/page_production/`
-   - Processes hits into simplified document format
-   - Deduplicates by item identifier
-   - Extracts snippets with search term highlighting
+   - Fetches the results from `/services/search/beta/page_production/`
+   - Processes the hits into a simplified document format
+   - Removes the duplicates by item identifier
+   - Extracts the snippets with the search terms highlighted
 
 3. **Metadata filters**
 
-   Every filter is ANDed onto the Lucene `user_query`. That is the only mechanism the full-text backend honours, and the alternatives are traps rather than merely unsupported:
+   The client ANDs each filter onto the Lucene `user_query`. That is the only mechanism that the full-text backend honours, and the alternatives are risks and not simply unsupported:
 
-   - `filter_map`, the search service's own faceting parameter, is **accepted and then silently ignored** by the `fts` backend. A request carrying `filter_map={"language":{"French":"inc"}}` returns HTTP 200 with the *unfiltered* total, which is indistinguishable from a filter that matched everything. Never route a filter through it.
-   - A `date:[… TO …]` range makes the backend fail: the FTS API answers 502 and the gateway turns that into a 400. Only `year` is usable for dating, which is why the flags are `--from-year`/`--to-year` rather than full dates.
-   - An unknown field name yields `total=0`, not an error and not the unfiltered set. So a filter typo looks exactly like "this material does not exist" — hence no filter is exposed that has not been confirmed to narrow a real query live.
+   - `filter_map`, the faceting parameter of the search service itself, is **accepted and then ignored** by the `fts` backend. A request that carries `filter_map={"language":{"French":"inc"}}` gives HTTP 200 with the *unfiltered* total, which is identical to a filter that matched everything. Never send a filter through it.
+   - A `date:[… TO …]` range makes the backend fail: the FTS API answers HTTP 502, and the gateway converts that into an HTTP 400. Only `year` is usable for a date, which is why the flags are `--from-year` and `--to-year` and not full dates.
+   - An unknown field name gives `total=0`. It does not give an error, and it does not give the unfiltered set. Thus a spelling error in a filter looks exactly like "this material does not exist". For this reason the client shows no filter that the tests did not confirm live against a real query.
 
-   `year_clause()` builds an open-ended range (`year:[1880 TO *]`) so either bound may be omitted, and raises `ValueError` when the range runs backwards, which would otherwise return a silent zero. `language_clause()` expands a language to every spelling archive.org is known to use, because uploaders supply a name (`French`), a MARC code (`fre`) or the terminology variant (`fra`) and those select different items: 1,391, 6,976 and a further slice of the same corpus respectively for one test query. The remaining filters are phrase matches built by `metadata_clause()`, with values quoted by `quote_phrase()` so that a two-word value is not split into two loose terms.
+   `year_clause()` builds an open range (`year:[1880 TO *]`), so a caller can omit either bound. It raises `ValueError` when the range runs backwards, which would otherwise give a quiet zero. `language_clause()` expands a language to each spelling that archive.org is known to use, because the people who upload items supply a name (`French`), a MARC code (`fre`) or the terminology variant (`fra`), and those select different items: 1,391, 6,976 and a further part of the same corpus, for one test query. `metadata_clause()` builds the remaining filters as phrase matches, and `quote_phrase()` puts quotation marks around the values so that the server does not divide a two-word value into two loose terms.
 
-   **All of these filters read item metadata, and a great deal of archive.org has none.** Every item in the `iapsop` collection, for instance, carries no year, date, language, creator or subject whatsoever - only a title equal to its identifier. Any of these filters therefore reduces an iapsop search to zero results. The behaviour is correct and the docs say so loudly; there is nothing to fix in the client.
+   **Each of these filters reads the item metadata, and a large part of archive.org has none.** Each item in the `iapsop` collection, for example, carries no year, no date, no language, no creator and no subject. It carries only a title equal to its identifier. Thus any of these filters reduces an `iapsop` search to zero results. The behaviour is correct, and the documentation says so loudly. There is nothing to correct in the client.
 
-   `ocr_detected_lang` (e.g. `ocr_detected_lang:en`) *is* queryable and does narrow, and it survives on items with no catalogued language. It is deliberately not wired to `--language`: it is the scanner's guess about a scan rather than a catalogue statement, and it uses a third vocabulary (ISO 639-1) again. The skill documents it as an in-query escape hatch instead.
+   `ocr_detected_lang` (for example `ocr_detected_lang:en`) *is* queryable, and it does narrow a search, and it survives on items with no catalogued language. The client deliberately does not connect it to `--language`: it is the guess of the scanner about a scan and not a statement of the catalogue, and it uses a third vocabulary again (ISO 639-1). The skill documents it as an escape route inside the query instead.
 
 4. **Search Result Processing**
-   - `get_identifier()` - Extracts item ID from hit
-   - `extract_scalar()` - Unwraps nested API response values
-   - `extract_list()` - Extracts lists from various response formats
-   - `sanitize_snippet()` - Cleans up highlight braces and whitespace
-   - `coerce_page()` - Parses page numbers from results
+   - `get_identifier()` - extracts the item id from a hit
+   - `extract_scalar()` - unwraps the nested values of the API response
+   - `extract_list()` - extracts the lists from the various response formats
+   - `sanitize_snippet()` - cleans the highlight braces and the whitespace
+   - `coerce_page()` - parses the page numbers from the results
 
 #### Download Implementation
 
-The download functionality retrieves OCR text from archive.org items and **returns the file path**, not the content:
+The download function retrieves the OCR text from an archive.org item and **returns the file path**, not the content.
 
-**Key Design: Returns Path, Not Content**
+**Key decision: it returns a path, not the content**
 
-The `download_text()` method returns a `Path` to the cached file, not the text itself. This is intentional:
-- OCR text files are very large (100KB-1MB+)
-- Returning full text to LLM is wasteful
-- LLM can read portions of the file as needed
-- More efficient for MCP protocol
+The `download_text()` method returns a `Path` to the cached file, not the text. This is deliberate:
+- The OCR text files are very large (100KB-1MB or more)
+- To return the full text to an LLM is wasteful
+- The LLM can read parts of the file as it needs them
+- It is more efficient for the MCP protocol
 
 1. **Caching Strategy**
 
-   **IMPORTANT: Only downloads are cached, NOT searches.**
+   **IMPORTANT: the client caches the downloads only, NOT the searches.**
 
-   Downloads are cached because:
-   - OCR text files are large (often 100KB-1MB+)
-   - Content is static (doesn't change once published)
-   - Reduces load on archive.org servers
-   - Improves response time dramatically (instant vs. seconds)
+   It caches the downloads for these reasons:
+   - The OCR text files are large (frequently 100KB-1MB or more)
+   - The content is static (it does not change after publication)
+   - It lowers the load on the servers of archive.org
+   - It improves the response time greatly (immediate against seconds)
 
-   Cache behavior:
+   Cache behaviour:
    - **Location**: `$XDG_CACHE_HOME/archives-mcp/` (see `paths.py`)
-   - **Key format**: `{identifier}.txt` (filename auto-detected)
-   - **Cache check**: First action in `download_text()`
-   - **What's cached**:
-     - Successful downloads → Full text content in file
-     - 404 Not Found → `UNAVAILABLE_SENTINEL` (prevents repeated failed requests)
-     - 401/403 Access Denied → **not cached**; raised instead, since archive.org returns 403 both for restricted items and for throttled requests, and a throttled request must not mark a document permanently unavailable
-   - **Cache write**: After a successful download, or a confirmed 404
-   - **Return value**: Path to cached file (or None if unavailable)
+   - **Key format**: `{identifier}.txt` (the client detects the filename)
+   - **Cache check**: the first action in `download_text()`
+   - **What the client caches**:
+     - A successful download → the full text content in a file
+     - HTTP 404 Not Found → `UNAVAILABLE_SENTINEL` (which prevents repeated failed requests)
+     - HTTP 401/403 Access Denied → **not cached**; raised instead, because archive.org gives 403 both for a restricted item and for a throttled request, and a throttled request must not mark a document permanently unavailable
+   - **Cache write**: after a successful download, or after a confirmed 404
+   - **Return value**: the path to the cached file (or None if the item is unavailable)
 
-   Searches are NOT cached because:
-   - Results change over time (new documents added)
-   - Search results are small (just metadata + snippets)
+   It does NOT cache the searches, for these reasons:
+   - The results change over time (people add new documents)
+   - The search results are small (metadata and snippets only)
    - Users expect fresh results
-   - Different queries/pages need different results
+   - Different queries and pages need different results
 
-2. **Text File Selection** Priority order for automatic file detection:
-   - hOCR format (`_hocr.txt`) - structured OCR with positioning info
+2. **Text File Selection.** The priority order for automatic detection of the file:
+   - hOCR format (`_hocr.txt`) - structured OCR with position information
    - DjVuTXT format (`_djvu.txt`) - high-quality DjVu OCR
-   - Generic `.txt` files - fallback
+   - Generic `.txt` files - the last option
 
 3. **File Validation**
-   - `_is_valid_text_file()` - Rejects non-text files
-   - Filters out ABBYY XML, metadata files, scan data
-   - Only accepts `.txt` and `.txt.gz` extensions
+   - `_is_valid_text_file()` - rejects a file that is not text
+   - Removes the ABBYY XML, the metadata files and the scan data
+   - Accepts only the `.txt` and `.txt.gz` extensions
 
 4. **Metadata API**
-   - `_fetch_item_files_metadata()` - Gets file list for an item
+   - `_fetch_item_files_metadata()` - gets the file list for an item
    - Endpoint: `https://archive.org/metadata/{identifier}/files`
-   - Returns list of available files with format info
+   - Returns a list of the available files with their format information
 
 5. **Download Process**
-   - Construct download URL: `https://archive.org/download/{identifier}/{filename}`
-   - Handle gzip decompression for `.gz` files
-   - Handle 404, 401, 403 errors gracefully
-   - Cache results to avoid repeated downloads
+   - Build the download URL: `https://archive.org/download/{identifier}/{filename}`
+   - Decompress a `.gz` file
+   - Handle the 404, 401 and 403 errors correctly
+   - Put the results in the cache, to prevent repeated downloads
 
 #### Utility Functions
 
-- `_safe_int()` - Safe integer conversion with fallback
-- `build_item_url()` - Constructs archive.org detail page URLs
-- `sanitize_snippet()` - Normalizes whitespace, keeping `{brace}` match highlights by default
+- `_safe_int()` - a safe conversion to an integer, with a fallback
+- `build_item_url()` - builds the archive.org detail page URLs
+- `sanitize_snippet()` - normalises the whitespace, and keeps the `{brace}` match highlights by default
 
 ### server.py
 
 #### FastMCP Integration
 
-The server uses FastMCP decorators to expose tools:
+The server uses the FastMCP decorators to show the tools:
 
-1. **@mcp.tool()** - Marks async functions as MCP tools
-2. **@mcp.resource()** - Provides static information resources
+1. **@mcp.tool()** - marks an async function as an MCP tool
+2. **@mcp.resource()** - gives a static information resource
 
 #### Tools
 
@@ -177,9 +177,9 @@ async def search_archive(
 ```
 
 - Searches Internet Archive for text documents
-- Returns paginated results (100 docs/page)
-- Optional collection filtering
-- Handles collection-specific client creation
+- Returns the results in pages (100 documents for each page)
+- An optional collection filter
+- Creates a collection-specific client where necessary
 
 Return format:
 ```python
@@ -206,13 +206,13 @@ Return format:
 async def download_text(identifier: str) -> str
 ```
 
-- Downloads OCR text for an item and saves to cache
-- Automatic text file detection (hOCR > DjVu > generic)
-- **Returns path to cached file** (as string), not the content
-- Returns error message if document not accessible
-- Uses caching to minimize downloads
+- Downloads the OCR text for an item and writes it to the cache
+- Detects the text file automatically (hOCR > DjVu > generic)
+- **Returns the path to the cached file** (as a string), not the content
+- Returns an error message if the document is not accessible
+- Uses the cache, to keep the downloads low
 
-**Important**: The returned path points to a large text file. The LLM should read it using Read tool to access portions as needed, rather than loading the entire file into context.
+**Important**: the returned path points at a large text file. The LLM must read it with the Read tool, and must take the parts that it needs. It must not load the full file into the context.
 
 #### Global Client Management
 
@@ -227,93 +227,93 @@ async def get_client() -> ArchivesClient:
     return _client
 ```
 
-- Single global client instance for connection pooling
-- Lazy initialization on first use
-- Persistent cache directory
+- One global client instance, for connection pooling
+- Lazy initialisation at the first use
+- A persistent cache directory
 
 ### install.py
 
 #### CLI Installation
 
-The install script automatically adds the MCP server to supported CLIs:
+The install script adds the MCP server to the supported CLIs:
 
-1. **install_claude()** - Installs to Claude Code
+1. **install_claude()** - installs to Claude Code
    ```bash
    claude mcp add --transport stdio --scope user archives -- \
      uv --directory <project_dir> run archives-mcp
    ```
 
-2. **install_codex()** - Installs to Codex CLI
+2. **install_codex()** - installs to the Codex CLI
    ```bash
    codex mcp add archives -- \
      uv --directory <project_dir> run archives-mcp
    ```
 
-3. **install_gemini()** - Installs to Gemini CLI
+3. **install_gemini()** - installs to the Gemini CLI
    ```bash
    gemini mcp add archives \
      uv --directory <project_dir> run archives-mcp
    ```
 
-#### Design Rationale
+#### Reasons for the design
 
-- Uses `uv --directory` to ensure commands run from project directory
-- This allows the server to find dependencies and cache directory
-- Gracefully handles missing CLIs (warns but doesn't fail)
-- Uses absolute paths to avoid ambiguity
+- It uses `uv --directory`, so that the commands run from the project directory
+- Thus the server can find its dependencies and its cache directory
+- It handles an absent CLI correctly (it gives a warning, and it does not fail)
+- It uses absolute paths, to prevent ambiguity
 
 ## API Integration
 
 ### Internet Archive Fulltext Search
 
-The search implementation uses the undocumented fulltext search API:
+The search implementation uses the fulltext search API, which has no documentation:
 
 - **Endpoint**: `https://archive.org/services/search/beta/page_production/`
 - **Backend**: `service_backend=fts` (fulltext search)
-- **Based on**: TypeScript implementation from @internetarchive/search-service
+- **Based on**: the TypeScript implementation from @internetarchive/search-service
   - SearchParamURLGenerator: https://github.com/internetarchive/iaux-search-service/blob/main/src/search-param-url-generator.ts
   - FulltextSearchBackend: https://github.com/internetarchive/iaux-search-service/blob/main/src/search-backend/fulltext-search-backend.ts
 
 ### Download URLs
 
-Direct download URLs follow the pattern:
+The direct download URLs follow this pattern:
 ```
 https://archive.org/download/{identifier}/{filename}
 ```
 
-No authentication required for public items.
+A public item needs no authentication.
 
 ### Metadata API
 
-File listings are retrieved from:
+The client retrieves the file listings from:
 ```
 https://archive.org/metadata/{identifier}/files
 ```
 
-Returns JSON with available files and their metadata.
+This gives JSON with the available files and their metadata.
 
 ## Caching Strategy
 
-### What Gets Cached?
+### What the client caches
 
-**Downloads ONLY** - The system caches downloaded OCR text files.
+**The downloads ONLY.** The client caches the OCR text files that it downloads.
 
-**Searches are NOT cached** - Search requests always hit the API to get fresh results.
+**It does NOT cache the searches.** A search request always reaches the API, so that the results are fresh.
 
-### Why This Approach?
+### Why
 
-**Downloads should be cached:**
-- Large files (100KB-1MB+ of text)
-- Static content (doesn't change after publication)
-- Expensive to fetch repeatedly
-- Reduces server load on archive.org
-- Instant response for repeated requests
+**The client must cache the downloads:**
+- The files are large (100KB-1MB or more of text)
+- The content is static (it does not change after publication)
+- To fetch them repeatedly is expensive
+- It lowers the server load on archive.org
+- It gives an immediate response to a repeated request
 
-**Searches should NOT be cached:**
-- Small payloads (metadata + snippets)
-- Dynamic results (new documents added regularly)
+**The client must NOT cache the searches:**
+- The payloads are small (metadata and snippets)
+- The results are dynamic (people add new documents regularly)
 - Users expect fresh results
-- Query variations mean cache would have low hit rate
+- The queries vary, so the cache would have a low hit rate
 
 ### Cache Directory Structure
 
@@ -323,13 +323,13 @@ $XDG_CACHE_HOME/archives-mcp/
 └── {identifier}.txt              # Cached text when auto-detected filename
 ```
 
-Resolved by `paths.cache_dir()`; override with `--cache-dir` or `ARCHIVES_CACHE_DIR`.
+`paths.cache_dir()` resolves this; change it with `--cache-dir` or `ARCHIVES_CACHE_DIR`.
 
 ### Cache Keys
 
-Generated by `_get_cache_key()` method (line 610-614):
-- With filename: `{identifier}_{filename}` (with `/` replaced by `_`)
-- Without filename: `{identifier}` (with `/` replaced by `_`)
+The `_get_cache_key()` method generates them (line 610-614):
+- With a filename: `{identifier}_{filename}` (with `/` replaced by `_`)
+- Without a filename: `{identifier}` (with `/` replaced by `_`)
 
 Example:
 - `nothingsostrange0000arth.txt`
@@ -339,74 +339,74 @@ Example:
 
 The cache stores plain text in `.txt` files:
 
-- **Successful downloads**: Full OCR text content
-- **Failed downloads**: String `"404"` (to avoid repeated failed requests)
+- **A successful download**: the full OCR text content
+- **A failed download**: the string `"404"` (which prevents repeated failed requests)
 
 This means:
-- If you see `"404"` in cache, the file was not found or is restricted
-- If you see real content, it's the full OCR text from archive.org
+- If you see `"404"` in the cache, the server did not find the file, or the file is restricted
+- If you see real content, it is the full OCR text from archive.org
 
 ### Cache Flow
 
 In `download_text()`:
 
-1. Return the cached path unless `refresh` was asked for; a sentinel entry returns None.
-2. Auto-detect the text file when none was named, or the named one is not text.
-3. Download, decode (decompressing `.gz`), and write to the cache.
-4. Write the sentinel only for a confirmed 404 or an item with no text file.
+1. Return the cached path unless the caller asked for `refresh`. A sentinel entry returns None.
+2. Detect the text file automatically when the caller named none, or when the named file is not text.
+3. Download the file, decode it (and decompress a `.gz` file), and write it to the cache.
+4. Write the sentinel only for a confirmed 404, or for an item with no text file.
 
 ### Benefits
 
-1. **Minimizes API calls** - Repeated requests return instantly
-2. **Respects archive.org** - Reduces load on their servers
-3. **Faster responses** - No network latency for cached items
-4. **Offline capability** - Can work with previously downloaded items
-5. **Prevents repeated failures** - Caching "404" stops futile retry attempts
+1. **Keeps the API calls low** - a repeated request returns immediately
+2. **Respects archive.org** - it lowers the load on their servers
+3. **Faster responses** - no network delay for a cached item
+4. **Operates offline** - it can use the items that it downloaded earlier
+5. **Prevents repeated failures** - the cached "404" stops the futile attempts
 
 ### Implementation Details
 
 **Cache methods**:
-- `_get_cache_key()` - Generates cache filename from identifier/filename
-- `_write_to_cache()` - Writes text to cache file
-- `_is_unavailable_marker()` - Detects the sentinel, checking file size first so a multi-megabyte entry is never read just to compare it against a 3-byte string
+- `_get_cache_key()` - generates the cache filename from the identifier and the filename
+- `_write_to_cache()` - writes the text to the cache file
+- `_is_unavailable_marker()` - detects the sentinel. It examines the file size first, so it never reads a multi-megabyte entry only to compare it against a 3-byte string.
 
-**No cache eviction** - Files remain cached indefinitely. Manual cleanup required if disk space is a concern.
+**No cache eviction** - the files stay in the cache. A person must clean them manually if the disk space is a concern.
 
-**Thread safety** - Not currently implemented. Single-threaded usage assumed (typical for MCP servers).
+**Thread safety** - not implemented now. The code assumes single-threaded use, which is typical for an MCP server.
 
 ## Rate Limiting
 
-Requests are spaced by a cross-process rate limiter (`ratelimit.py`), default 0.5s, overridable with `ARCHIVES_MIN_REQUEST_INTERVAL`. Search, metadata and download requests all pass through it.
+A cross-process rate limiter (`ratelimit.py`) spaces the requests. The default is 0.5s, and `ARCHIVES_MIN_REQUEST_INTERVAL` changes it. The search requests, the metadata requests and the download requests all pass through it.
 
-**Why cross-process rather than an instance or class attribute.** An in-process limiter was adequate while the only caller was a long-lived MCP server handling one request at a time. It is not adequate now: every CLI invocation is a separate process with its own state, and callers are expected to fan work out across several at once, so any in-process counter paces nothing. The limiter therefore keeps its timestamp in `.rate-limit` inside the cache directory, guarded by an exclusive `flock`, which every process sharing that cache observes.
+**Why the limiter operates across processes, and not as an instance attribute or a class attribute.** An in-process limiter was sufficient while the only caller was a long-lived MCP server that handled one request at a time. It is not sufficient now: each call of the CLI is a separate process with its own state, and we expect the callers to divide the work across several processes at the same time. Thus any in-process counter paces nothing. The limiter keeps its timestamp in `.rate-limit` inside the cache directory, with an exclusive `flock` to guard it, and each process that shares that cache obeys it.
 
-The lock is never held across a sleep: a waiter releases it and retries, so one slow caller cannot wedge the others behind it. Wall-clock time is used rather than monotonic, since only wall clock is comparable between processes.
+The lock is never held across a sleep: a waiter releases it and tries again, so one slow caller cannot block the others behind it. The limiter uses wall-clock time and not monotonic time, because only the wall clock is comparable between processes.
 
 ## Error Handling
 
 ### Search Errors
 
-- HTTP errors → Return error in response dict, empty documents list
-- Parse errors → Return error in response dict
-- Always returns valid dict structure for MCP tool contract
+- HTTP errors → return the error in the response dict, with an empty documents list
+- Parse errors → return the error in the response dict
+- The method always returns a valid dict structure, for the MCP tool contract
 
 ### Download Errors
 
-The governing rule: `None` means "archive.org says this does not exist". Anything that might succeed on a retry is raised, so that a transient failure is never mistaken for an absent document and never cached as one.
+The governing rule: `None` means "archive.org says that this does not exist". The client raises anything that a second attempt can resolve, so it never mistakes a temporary failure for an absent document, and it never puts one in the cache as one.
 
-- 404 Not Found → cache the sentinel, return None
-- Item has no text file → cache the sentinel, return None
-- 401/403 Access Denied → **raise** (restricted or throttled - indistinguishable)
+- HTTP 404 Not Found → cache the sentinel, return None
+- The item has no text file → cache the sentinel, return None
+- HTTP 401/403 Access Denied → **raise** (restricted or throttled — the two are identical from here)
 - Network errors → **raise**
-- Metadata API unreachable → **raise** (previously swallowed, which cached readable documents as permanently unavailable)
-- Gzip / decode errors → **raise** as `RuntimeError`
+- The Metadata API is unreachable → **raise** (an earlier version absorbed this, which cached readable documents as permanently unavailable)
+- Gzip errors and decode errors → **raise** as a `RuntimeError`
 
-An unknown identifier is not an error: archive.org answers the files endpoint with `{"error": "Couldn't locate item ..."}`, which is read as "no files" and cached as unavailable.
+An unknown identifier is not an error: archive.org answers the files endpoint with `{"error": "Couldn't locate item ..."}`, which the client reads as "no files" and caches as unavailable.
 
 ### Graceful Degradation
 
-- File auto-detection via metadata API (prefers hOCR > DjVu > generic .txt)
-- Invalid file type → Attempt to find alternative text file
+- The client detects the file automatically through the metadata API (it prefers hOCR > DjVu > generic .txt)
+- An invalid file type → the client tries to find an alternative text file
 
 ## Testing
 
@@ -418,38 +418,38 @@ Run the server in development mode:
 uv run fastmcp dev src/archives_mcp/server.py
 ```
 
-This opens the MCP Inspector for interactive testing.
+This opens the MCP Inspector for interactive tests.
 
 ### Integration Testing
 
 Test the full installation:
 
-1. Install to CLI: `uv run archives-mcp-install`
-2. Restart CLI
+1. Install to a CLI: `uv run archives-mcp-install`
+2. Restart the CLI
 3. Use the tools in a conversation
-4. Check cache directory for downloaded files
+4. Examine the cache directory for the downloaded files
 
 ## Future Improvements
 
-### Potential Enhancements
+### Possible Improvements
 
-1. **Retry logic** - Add exponential backoff for transient failures
-2. **Batch downloads** - Download multiple documents efficiently
-3. **Result ranking** - Improve relevance scoring
-4. **Snippet context** - Include more surrounding text in snippets
+1. **Retry logic** - add exponential backoff for a temporary failure
+2. **Batch downloads** - download several documents efficiently
+3. **Result ranking** - improve the relevance score
+4. **Snippet context** - include more text around the snippets
 
 ### Known Limitations
 
-1. **No authentication** - Cannot access private/restricted items
-2. **Text only** - Only handles OCR text, not images/PDFs/etc.
-3. **English-focused** - Better for English documents (OCR quality varies)
-4. **Cache management** - No automatic cache cleanup/expiration
-5. **Error messages** - Could provide more specific guidance for failures
-6. **Metadata filters only reach catalogued items** - archive.org's item metadata is uneven, so a year, language, creator or subject filter excludes everything that was uploaded without it. Nothing in the client can recover a field the archive does not hold
+1. **No authentication** - the client cannot access a private or restricted item
+2. **Text only** - it handles the OCR text only, not the images, the PDFs or other formats
+3. **Focused on English** - it is better for English documents (the OCR quality varies)
+4. **Cache management** - no automatic cleaning and no expiry
+5. **Error messages** - they could give more specific guidance for a failure
+6. **The metadata filters reach the catalogued items only** - the item metadata of archive.org is uneven, so a year, language, creator or subject filter excludes each item that a person uploaded without it. Nothing in the client can recover a field that the archive does not hold.
 
 ## Appendix: Query Syntax
 
-The search supports Lucene-style query syntax:
+The search supports the Lucene-style query syntax:
 
 - **AND** (implicit): `magic tricks` = documents with both "magic" AND "tricks"
 - **OR**: `Houdini OR Kellar` = documents with either name
@@ -459,4 +459,4 @@ The search supports Lucene-style query syntax:
 - **Field search**: `creator:Houdini` = search specific field
 - **Wildcards**: `magi*` = matches "magic", "magician", etc.
 
-This is handled by Internet Archive's search engine, not by our code.
+The search engine of Internet Archive handles this. Our code does not.

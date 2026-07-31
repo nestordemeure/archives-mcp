@@ -1,11 +1,11 @@
 ---
 name: archives-search
-description: Search the full text of Internet Archive books and periodicals with the `archives` CLI, and pull OCR text out of specific items. Use for English-language books, magic and spiritualist periodicals, and anything digitised by archive.org.
+description: Search the full text of Internet Archive books and periodicals with the `archives` CLI, and take the OCR text out of a specified item. Use it for English-language books, magic and spiritualist periodicals, and all material that archive.org digitised.
 ---
 
 # Internet Archive
 
-Full-text search across archive.org's digitised texts. Strongest on English-language books and periodicals; the `iapsop` collection covers spiritualist and occult periodicals specifically.
+A full-text search of the digitised texts of archive.org. The source is strongest on English-language books and periodicals. The `iapsop` collection holds spiritualist and occult periodicals.
 
 ## Commands
 
@@ -16,59 +16,73 @@ archives search "<query>" [--pages N|N-M|all] [--snippets N] [--collection NAME]
 archives get <identifier>     # download OCR text, prints path to the cached file
 ```
 
-`search` prints a header with the total result count and page count, then one block per document: identifier, date, title, URL, and snippets with the matched terms in `{braces}`. Any active filters are echoed in that header in `[brackets]`, so a suspiciously small total can be traced to the filter that caused it. `get` prints a path — the files run 100KB–1MB+, so read slices of them, never the whole thing.
+`search` prints a header with the total number of results and the number of pages. Then it prints one block for each document: the identifier, the date, the title, the URL, and snippets with the matched terms in `{braces}`. The header shows each active filter in `[brackets]`, so you can find the filter that caused a total that is smaller than you expect.
+
+`get` prints a path. The files are 100KB–1MB or more, so read parts of them. Never read a full file.
 
 ## Query syntax
 
-- Spaces mean AND: `magic tricks` needs both words
+- A space means AND: `magic tricks` needs both words
 - `"quoted phrases"` match exactly
-- `OR` for alternatives: `Houdini OR Kellar`
-- `-` excludes: `magic -card`
-- Parentheses group: `(Houdini OR Kellar) AND escape`
-- `creator:Houdini` searches a specific field; `magi*` wildcards
+- `OR` gives alternatives: `Houdini OR Kellar`
+- `-` excludes a term: `magic -card`
+- Parentheses group the terms: `(Houdini OR Kellar) AND escape`
+- `creator:Houdini` searches one field; `magi*` is a wildcard
 
-**Matching is document-level, not page-level.** `"Harry Houdini" AND Edison` matches a 900-page volume containing both, hundreds of pages apart, with no relationship between them. Treat multi-term AND results as leads, never as evidence of a connection.
+**A match is at document level, not at page level.** `"Harry Houdini" AND Edison` matches a 900-page volume that holds both terms hundreds of pages apart, with no relation between them. Treat a result from a multi-term AND query as a lead. Never accept it as evidence of a connection.
 
-Combine alternatives into one query rather than running several searches — one `(A OR B OR C)` call costs a fraction of three separate ones.
+Put the alternatives into one query in place of several separate searches. One `(A OR B OR C)` call costs a fraction of three separate calls.
 
 ## Filters
 
-Every filter is optional and reads the **item's catalogue metadata**, never the page the match was found on. `--from-year 1880 --to-year 1900` restricts to items whose catalogued year falls in the range; `--language French` to catalogued French; `--title "Household Words"` to items whose title contains that phrase; `--creator "Dickens, Charles"` to works *by* someone rather than works mentioning them; `--subject "Historical Journals"` to a catalogued subject heading. Values with spaces need shell quoting, and the creator and subject forms vary item to item — copy them off a result line when precision matters.
+Each filter is optional, and each filter reads the **catalogue metadata of the item**. No filter reads the page that holds the match.
 
-**The trap: a filter silently deletes every item whose metadata lacks that field, and archive.org's metadata is wildly uneven.** These filters do not narrow a set, they intersect it with "items someone catalogued properly".
+Each filter selects items from the catalogue metadata:
 
-- `clairvoyance --collection iapsop` returns 11,632 results. Add `--from-year 1890 --to-year 1899` and it returns **0** — not because the collection has no 1890s material, but because iapsop items carry no year, date, language, creator or subject metadata at all. Their only dating is inside the identifier (`IAPSOP-light_v19_n940_jan_14_1899`), and the result lines show `n.d.` to say so.
-- So: **never put a year, language, creator or subject filter on an iapsop sweep.** Filter iapsop by reading the dates in the identifiers instead.
-- More generally, when a filter drops the total to zero or near it, suspect missing metadata before concluding the material does not exist. Re-run without the filter and look at whether the result lines carry real dates.
+- `--from-year 1880 --to-year 1900` — the items whose catalogued year is in that range
+- `--language French` — the items catalogued as French
+- `--title "Household Words"` — the items whose title holds that phrase
+- `--creator "Dickens, Charles"` — the works *by* a person, not the works that mention the person
+- `--subject "Historical Journals"` — a catalogued subject heading
 
-Where a collection has no catalogued language, `ocr_detected_lang` often still works and can go straight into the query: `clairvoyance AND ocr_detected_lang:en --collection iapsop` keeps 10,529 of those 11,632 hits. It is the scanner's guess about the scan, not a catalogue statement, so it is a recall aid and not evidence.
+Put quotation marks around a value that holds a space. The creator form and the subject form are different for each item. Copy them from a result line when you need precision.
 
-`--language` takes a name or a MARC code (`French`, `fre`). archive.org accepts either from uploaders and they select different items, so every known spelling of a named language is searched at once; an unrecognised value is passed through as given.
+**Warning: Do not trust a filtered total. A filter removes each item whose metadata does not hold that field, and it gives no message when it does this.** The metadata of archive.org is very uneven. These filters do not limit a set. They intersect it with "the items that a person catalogued correctly".
 
-Filters are worth most as a way to make a huge query readable: `"second sight" --from-year 1880 --to-year 1900 --language English` cuts a six-figure total to 18,708. Filters are worth least on the collections this project cares about most, for the reason above.
+- `clairvoyance --collection iapsop` gives 11,632 results. Add `--from-year 1890 --to-year 1899` and it gives **0**. The collection does hold material from the 1890s, but `iapsop` items have no year, date, language, creator or subject metadata at all. Their only date is inside the identifier (`IAPSOP-light_v19_n940_jan_14_1899`), and the result lines show `n.d.` to report this.
+- So: **never put a year, language, creator or subject filter on an `iapsop` search.** Filter `iapsop` by the dates that you read in the identifiers instead.
+- More generally, a filter can reduce the total to zero or nearly zero. Suspect absent metadata before you conclude that the material does not exist. Do the search again without the filter. Then check whether the result lines carry real dates.
 
-## Being exhaustive
+Where a collection has no catalogued language, you can often still use `ocr_detected_lang`. Put it directly into the query: `clairvoyance AND ocr_detected_lang:en --collection iapsop` keeps 10,529 of those 11,632 results. This field is the guess of the scanner about the scan. It is not a statement of the catalogue, so it improves recall but it is not evidence.
 
-100 results per page. `--pages all` sweeps every page in one invocation; prefer it over looping page-by-page when the total is manageable. Check the header's total first: at several thousand results, tighten the query instead of sweeping, or the sift will cost more than it returns.
+`--language` takes a name or a MARC code (`French`, `fre`). archive.org accepts both forms from the people who upload items, and the two forms select different items. Therefore the client searches each known spelling of a named language at the same time. It sends an unknown value without a change.
+
+Filters have the most value when they make a very large query readable: `"second sight" --from-year 1880 --to-year 1900 --language English` reduces a six-figure total to 18,708. Filters have the least value on the collections that this project uses most, for the reason above.
+
+## How to be complete
+
+There are 100 results on each page. `--pages all` collects each page in one call. Use it in place of a loop over the pages when the total is small enough. Read the total in the header first. At several thousand results, make the query more narrow. Do not collect the results, because the rejection work will cost more than the results give.
 
 ## False positives to expect
 
-The braces show which token actually matched — that is the single most useful signal here.
+The braces show which token matched. This is the most useful signal on this source.
 
-- **Substring matches inside longer names.** An `"Ann Hunter"` query returns `Jo{ann Hunter}` and `Le{ann Hunter}`. Read the braces before believing a hit.
-- **Hyphenation across line breaks.** OCR splits words, so `Jo- {ann Hunter}` rejoins to "Joann Hunter" — a mismatch, despite looking like a clean hit.
-- **OCR noise inside the match**, e.g. `{Ann) Hunter}`. Usually still the right person; judge from surrounding context.
-- **Bibliographies and indexes.** A name in a citation list or a table of contents is a passing mention, not substantive content.
-- **Wrong sense or wrong person entirely** — check that the surrounding context fits the domain before accepting.
+- **A substring match inside a longer name.** The query `"Ann Hunter"` gives `Jo{ann Hunter}` and `Le{ann Hunter}`. Read the braces before you accept a result.
+- **Hyphenation across a line break.** The OCR divides words, so `Jo- {ann Hunter}` joins to "Joann Hunter". This is an incorrect match that looks correct.
+- **OCR errors inside the match**, for example `{Ann) Hunter}`. This is usually still the correct person. Judge it from the context.
+- **Bibliographies and indexes.** A name in a list of citations or in a table of contents is a mention with no substance behind it.
+- **An incorrect sense or an incorrect person.** Make sure that the context agrees with the topic of your research before you accept a result.
 
-Snippets are usually enough to reject a false positive. Only `get` a document once the snippets suggest it is genuinely worth reading.
+Snippets are usually enough to reject a false positive. Use `get` on a document only after the snippets suggest that the document is genuinely worth a reading.
 
 ## Cost
 
-Search is cheap. `get` is not: downloads are large and cached under `$XDG_CACHE_HOME/archives-mcp`. When reading many documents, dispatch subagents so the OCR text stays out of the main context, and have them report back findings with page numbers and quotes.
+A search has a low cost. `get` does not. The downloads are large, and the client keeps them in a cache under `$XDG_CACHE_HOME/archives-mcp`. If you must read many documents, use subagents. The OCR text then stays out of the main context. Tell each subagent to report the findings with page numbers and quotations.
 
-Requests are paced to roughly two per second, and that pacing is shared across every process — so parallel subagents share one budget rather than each getting their own. Fanning out widely speeds up the reading, not the fetching.
+The client sends a maximum of approximately two requests each second, and all processes share this limit. Therefore parallel subagents share one budget. Many parallel subagents read the documents more quickly. They do not send the requests more quickly.
 
-If a `get` fails, read the message before concluding anything: "no OCR text" means the item genuinely has none, while any other error means the request may simply be worth retrying. Use `--refresh` to re-download something already cached.
+If a `get` command fails, read the message before you make a conclusion. "no OCR text" means that the item genuinely has none. Any other error means that the request can be worth one more attempt. Use `--refresh` to download an item again that is already in the cache.
 
-**Over-querying gets you banned, and the ban outlasts the session.** This is a free public service; a sweep that looks thorough from here looks like scraping from theirs. If requests start failing or returning something that is not what you asked for, stop and say so rather than retrying into a longer ban.
+**Warning: Do not send too many requests. Too many requests cause the archive to block you, and the block continues after this session.**
+
+This is a free public service. A search that looks thorough to you looks like data collection to the archive operators. Sometimes the requests start to fail. Sometimes they give content that you did not ask for. If this occurs, stop. Tell the user. Do not send the request again, because a repeated request makes the block longer.
