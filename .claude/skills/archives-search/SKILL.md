@@ -39,11 +39,11 @@ Each filter is optional, and each filter reads the **catalogue metadata of the i
 
 Each filter selects items from the catalogue metadata:
 
-- `--from-year 1880 --to-year 1900` — the items whose catalogued year is in that range
-- `--language French` — the items catalogued as French
-- `--title "Household Words"` — the items whose title holds that phrase
-- `--creator "Dickens, Charles"` — the works *by* a person, not the works that mention the person
-- `--subject "Historical Journals"` — a catalogued subject heading
+- `--from-year 1880 --to-year 1900`: the items whose catalogued year is in that range
+- `--language French`: the items catalogued as French
+- `--title "Household Words"`: the items whose title holds that phrase
+- `--creator "Dickens, Charles"`: the works *by* a person, not the works that mention the person
+- `--subject "Historical Journals"`: a catalogued subject heading
 
 Put quotation marks around a value that holds a space. The creator form and the subject form are different for each item. Copy them from a result line when you need precision.
 
@@ -61,7 +61,7 @@ Filters have the most value when they make a very large query readable: `"second
 
 ## How to be complete
 
-There are 100 results on each page. `--pages all` collects each page in one call. Use it in place of a loop over the pages when the total is small enough. Read the total in the header first. At several thousand results, make the query more narrow. Do not collect the results, because the rejection work will cost more than the results give.
+There are 100 results on each page. `--pages all` collects each page in one call. Use it in place of a loop over the pages when the total is small enough. Read the total in the header first. At several thousand results, make the query more narrow until you can read all of it: a phrase in place of single words, one more term, or one collection. Divide by date only on items that have a catalogued year, because a year filter removes the items with no date (see "Filters"). Give the rejection work to cheap agents.
 
 ## False positives to expect
 
@@ -77,7 +77,7 @@ Snippets are usually enough to reject a false positive. Use `get` on a document 
 
 ## Cost
 
-A search has a low cost. `get` does not. The downloads are large, and the client keeps them in a cache under `$XDG_CACHE_HOME/archives-mcp`. If you must read many documents, use subagents. The OCR text then stays out of the main context. Tell each subagent to report the findings with page numbers and quotations.
+A search has a low cost. `get` does not. The downloads are large, and the client keeps them in a cache under `$XDG_CACHE_HOME/archives-mcp`. If you must read many documents, download them, then give the reading to subagents on a cheap model (in Claude Code, the Codex agents first, which have no network access). The OCR text then stays out of the main context. Tell each subagent to report the findings with page numbers and quotations.
 
 The client sends a maximum of approximately two requests each second, and all processes share this limit. Therefore parallel subagents share one budget. Many parallel subagents read the documents more quickly. They do not send the requests more quickly.
 
