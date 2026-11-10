@@ -81,6 +81,8 @@ A search has a low cost. `get` does not. The downloads are large, and the client
 
 The client sends a maximum of approximately two requests each second, and all processes share this limit. Therefore parallel subagents share one budget. Many parallel subagents read the documents more quickly. They do not send the requests more quickly.
 
+If a `search` fails with HTTP 400 and "the FTS API request failed", the full-text backend failed. The client already tried two times. The cause is either the query (a `date:[...]` range, or a very long boolean query) or a temporary failure: a long query that failed one day worked the next day. Try once more some minutes later, then shorten the query.
+
 If a `get` command fails, read the message before you make a conclusion. "no OCR text" means that the item genuinely has none. Any other error means that the request can be worth one more attempt. Use `--refresh` to download an item again that is already in the cache.
 
 **Warning: Do not send too many requests. Too many requests cause the archive to block you, and the block continues after this session.**

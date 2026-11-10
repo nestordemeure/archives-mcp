@@ -386,6 +386,7 @@ The lock is never held across a sleep: a waiter releases it and tries again, so 
 
 ### Search Errors
 
+- HTTP 400 with "the FTS API request failed ... HTTP 502" in `response.error.message` → the backend failed. The same body comes for a query that the backend cannot run (a `date:` range) and for a temporary failure: a long boolean query failed one day and worked the next. `search` tries again one time after `BACKEND_RETRY_SECONDS`, then returns the server message with `BACKEND_FAILURE_ADVICE`.
 - HTTP errors → return the error in the response dict, with an empty documents list
 - Parse errors → return the error in the response dict
 - The method always returns a valid dict structure, for the MCP tool contract

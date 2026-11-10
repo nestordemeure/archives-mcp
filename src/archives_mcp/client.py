@@ -4,6 +4,7 @@ Internet Archive client for MCP server.
 Provides access to search and download OCR text from archive.org.
 """
 
+import asyncio
 import gzip
 import json
 import re
@@ -375,6 +376,31 @@ def coerce_page(fields: dict[str, Any]) -> int | None:
         return None
 
 
+# The search gateway answers HTTP 400 when the full-text backend fails. The
+# body then says "the FTS API request failed ... HTTP 502", both for a query
+# that the backend cannot run and for a temporary failure.
+BACKEND_RETRY_SECONDS = 5
+BACKEND_FAILURE_ADVICE = (
+    " The full-text backend failed, also on a second try. The cause is either the query "
+    "(a field range such as date:[...], or a very long boolean query) or a temporary failure of archive.org: "
+    "a long query that failed one day worked the next day. Try the same query once in a few minutes. "
+    "If it fails again, shorten it: fewer OR terms in each group, or one group for each search."
+)
+
+
+class SearchError(RuntimeError):
+    """archive.org refused a search; the message says why."""
+
+
+def _backend_error(response: httpx.Response) -> str:
+    """The error message in the body of a refused search, or ''."""
+    try:
+        error = (response.json().get("response") or {}).get("error") or {}
+    except ValueError:
+        return ""
+    return str(error.get("message", "")) if isinstance(error, dict) else str(error)
+
+
 class ArchivesClient:
     """Client for searching and downloading from Internet Archive"""
 
@@ -503,8 +529,19 @@ class ArchivesClient:
 
         try:
             client = await self._ensure_client()
-            await self._rate_limiter.acquire()
-            response = await client.get(url)
+            for attempt in (1, 2):
+                await self._rate_limiter.acquire()
+                response = await client.get(url)
+                if response.status_code != 400 or "FTS API request failed" not in (cause := _backend_error(response)):
+                    break
+                if attempt == 1:
+                    await asyncio.sleep(BACKEND_RETRY_SECONDS)
+            if response.status_code == 400:
+                cause = _backend_error(response)
+                raise SearchError(
+                    f"archive.org refused the search (HTTP 400: {cause or 'no message'})."
+                    + (BACKEND_FAILURE_ADVICE if "FTS API request failed" in cause else "")
+                )
             response.raise_for_status()
 
             parsed = response.json()
@@ -528,6 +565,14 @@ class ArchivesClient:
                 'documents': documents
             }
 
+        except SearchError as e:
+            return {
+                'error': str(e),
+                'page': page,
+                'total_results': 0,
+                'total_pages': 1,
+                'documents': []
+            }
         except httpx.HTTPError as e:
             return {
                 'error': f"HTTP error: {str(e)}",
